@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<title>mas hold-to-reveal regression</title>
+<link rel="stylesheet" href="../content/overlay.css">
+<style>body{font:14px/1.5 sans-serif;margin:24px}.pass{color:green}.fail{color:red}label{display:block;margin:8px}iframe{width:300px;height:100px}</style>
+<div id="verdict">运行中…</div><pre id="out"></pre>
+<fieldset><legend>Which option is recommended?</legend>
+<label><input type="radio" name="choice" value="A">Alpha</label>
+<label id="recommended"><input type="radio" name="choice" value="B">Beta</label>
+<label><input type="radio" name="choice" value="C">Gamma</label>
+<label><input type="radio" name="choice" value="D">Delta</label>
+</fieldset>
+<div id="warn" class="__mcq_pick_warn">Low confidence</div>
+<input id="numeric" class="__mcq_pick" value="4">
+<div id="scan" class="__mcq_scan">Scanning</div>
+<script>
+const contexts = [], broadcasts = [], requests = [];
+const settings = {apiKey:'fake',mode:'highlight',actionDelay:0,concurrency:1};
+function testChrome(win) {
+  const context = {win,listeners:[]}; contexts.push(context);
+  return {
+    storage:{local:{get:async()=>({mcqSettings:settings})}},
+    runtime:{onMessage:{addListener:fn=>context.listeners.push(fn)},sendMessage(msg,cb) {
+      let reply = {ok:true};
+      if(msg.type==='MCQ_SESSION_GET')reply={session:null};
+      if(msg.type==='MCQ_SOLVE'){requests.push(msg.payload);reply={ok:true,letters:['B'],confidence:1,reason:'local test'}};
+      if(msg.type==='MAS_HIGHLIGHTS_SET'){
+        broadcasts.push(msg.payload.visible);
+        for(const receiver of contexts)for(const fn of receiver.listeners)fn({type:'MAS_HIGHLIGHTS',payload:msg.payload},{},()=>{});
+      }
+      if(cb)cb(reply);return Promise.resolve(reply);
+    }}
+  };
+}
+window.chrome=testChrome(window);
+const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));
+function key(win,type,key,code,ctrlKey=true,altKey=true,extra={}) {
+  const event=new win.KeyboardEvent(type,{key,code,ctrlKey,altKey,bubbles:true,cancelable:true,...extra});
+  win.document.dispatchEvent(event);return event;
+}
+const press=(win=window)=>key(win,'keydown','p','KeyP');
+const release=(win=window)=>key(win,'keyup','p','KeyP');
+const outlined=el=>{
+  const style=el.ownerDocument.defaultView.getComputedStyle(el);
+  return style.outlineStyle==='solid'&&style.outlineWidth==='3px';
+};
+</script>
+<script src="../content/detector.js"></script><script src="../content/solver.js"></script>
+<script>
+(async()=>{
+  const checks=[],check=(name,ok)=>checks.push([name,!!ok]);
+  try{
+    contexts[0].listeners[0]({type:'MCQ_START'},{},()=>{});
+    await sleep(20);
+    for(let n=0;n<100&&__MCQ_DEBUG__.state.running;n++)await sleep(20);
+    const pick=document.querySelector('.__mcq_pick:not(#numeric)'),warn=document.getElementById('warn'),numeric=document.getElementById('numeric');
+    check('仅高亮模式仍成功求解并保留推荐标记',requests.length===1&&!!pick&&__MCQ_DEBUG__.state.stats.answered===1);
+    check('默认隐藏绿色、橙色和数字答案高亮',!outlined(pick)&&!outlined(warn)&&!outlined(numeric));
+    check('默认不注入答案背景颜色',getComputedStyle(pick).backgroundColor==='rgba(0, 0, 0, 0)');
+    check('扫描蓝色虚线仍可见',getComputedStyle(document.getElementById('scan')).outlineWidth==='2px');
+    check('网页悬浮面板名称为mas',document.getElementById('__mcq_panel_host').shadowRoot.querySelector('.hd b').textContent==='mas');
+    key(window,'keydown','p','KeyP',false,false);
+    check('仅按P不会显示答案',!outlined(pick));release();
+    key(window,'keydown','p','KeyP',true,false);
+    check('仅Ctrl+P不会显示答案',!outlined(pick));release();
+    key(window,'keydown','p','KeyP',false,true);
+    check('仅Alt+P不会显示答案',!outlined(pick));release();
+    const event=press();
+    check('完整快捷键立即显示三种答案标记',outlined(pick)&&outlined(warn)&&outlined(numeric));
+    check('高置信度为绿色、低置信度为橙色',getComputedStyle(pick).outlineColor==='rgb(22, 163, 74)'&&getComputedStyle(warn).outlineColor==='rgb(245, 158, 11)');
+    check('快捷键取消页面默认操作',event.defaultPrevented);
+    const count=broadcasts.length;press(window);key(window,'keydown','P','KeyP',true,true,{repeat:true});
+    check('长按自动重复不重复广播',broadcasts.length===count);
+    key(window,'keyup','x','KeyX');check('松开无关按键仍显示',outlined(pick));
+    release();check('松开P立即隐藏且无渐隐',!outlined(pick)&&getComputedStyle(pick).backgroundColor==='rgba(0, 0, 0, 0)');
+    press();key(window,'keyup','Control','ControlLeft',false,true);
+    check('松开Ctrl立即隐藏',!outlined(pick));release();
+    press();key(window,'keyup','Alt','AltLeft',true,false);
+    check('松开Alt立即隐藏',!outlined(pick));release();
+    key(window,'keydown','p','KeyP',false,false);key(window,'keydown','Control','ControlLeft',true,false);key(window,'keydown','Alt','AltLeft');
+    check('先按P再按修饰键也能显示',outlined(pick));release();
+    press();window.dispatchEvent(new Event('blur'));check('窗口失焦清除显示状态',!outlined(pick));
+    key(window,'keydown','Control','ControlLeft');check('失焦后不残留P按住状态',!outlined(pick));
+    press();window.dispatchEvent(new Event('pagehide'));check('离开页面立即隐藏',!outlined(pick));
+    press();Object.defineProperty(document,'hidden',{configurable:true,value:true});document.dispatchEvent(new Event('visibilitychange'));
+    check('切换标签页立即隐藏',!outlined(pick));
+    contexts[0].listeners[0]({type:'MAS_HIGHLIGHTS',payload:{visible:true}},{},()=>{});
+    check('后台页面拒绝重新显示',!outlined(pick));delete document.hidden;
+    press();key(window,'keydown','Escape','Escape');check('Esc立即隐藏',!outlined(pick));release();
+    const frame=document.createElement('iframe');
+    const solver=new URL('../content/solver.js',location.href).href,css=new URL('../content/overlay.css',location.href).href;
+    const loaded=new Promise(resolve=>frame.onload=resolve);
+    frame.srcdoc='<link rel="stylesheet" href="'+css+'"><label class="__mcq_pick" id="framePick">Frame answer</label><scr'+'ipt>window.chrome=parent.testChrome(window);window.__MCQ_DETECTOR__={collect:()=>[]};</scr'+'ipt><scr'+'ipt src="'+solver+'"></scr'+'ipt>';
+    document.body.appendChild(frame);await loaded;
+    const child=frame.contentWindow,childPick=child.document.getElementById('framePick');
+    check('新iframe默认隐藏',!outlined(childPick));
+    press();check('顶层按住时iframe同步显示',outlined(pick)&&outlined(childPick));
+    release();check('顶层松开时iframe同步隐藏',!outlined(pick)&&!outlined(childPick));
+    press(child);check('iframe内按住时顶层同步显示',outlined(pick)&&outlined(childPick));
+    key(child,'keyup','Alt','AltLeft',true,false);check('iframe松开修饰键时所有frame隐藏',!outlined(pick)&&!outlined(childPick));
+    press();child.dispatchEvent(new child.Event('blur'));
+    check('接收高亮的iframe失焦也清除整个标签页',!outlined(pick)&&!outlined(childPick));release();
+    check('快捷键不填写数字、不勾选选项或追加模型调用',numeric.value==='4'&&![...document.querySelectorAll('input[type=radio]')].some(input=>input.checked)&&requests.length===1);
+  }catch(error){check('无测试异常: '+error.stack,false)}
+  document.getElementById('verdict').innerHTML=checks.map(([name,ok])=>'<div class="'+(ok?'pass':'fail')+'">'+(ok?'PASS':'FAIL')+' — '+name+'</div>').join('');
+  document.getElementById('out').textContent=JSON.stringify({checks,broadcasts},null,2);
+  window.__TEST_DONE__=true;
+})();
+</script>
+</html>

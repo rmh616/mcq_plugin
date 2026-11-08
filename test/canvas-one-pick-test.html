@@ -1,0 +1,102 @@
+<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>Canvas Alt Shift W sequential option selection</title>
+<link rel="stylesheet" href="../content/overlay.css">
+<style>body{font:14px/1.5 sans-serif;margin:24px}.question{padding:12px;margin:16px;border:1px solid #ddd}label{display:block;margin:8px}.pass{color:green}.fail{color:red}</style>
+<div id="verdict">运行中…</div><pre id="out"></pre><div id="page"></div>
+<script>
+const requests=[],messages=[],pending=[],listeners=[],settings={apiKey:'fake',mode:'submit',actionDelay:0};
+let fixture,submits=0,changes=0,defer=false,replyMode='normal',resetProgress=0,manualEnds=0;
+function response(q){return {ok:true,letters:replyMode==='bad'?['Z']:replyMode==='tooMany'?['A','B']:q.type==='multi'?['A','C']:[q.options.at(-1).letter],confidence:1,reason:'local Canvas stub'}}
+function testChrome(frameListeners=[]){return {storage:{local:{get:async()=>({mcqSettings:settings})}},runtime:{onMessage:{addListener:fn=>frameListeners.push(fn)},sendMessage(msg,cb){
+ messages.push(msg.type);let reply={ok:true};
+ if(msg.type==='MCQ_SESSION_GET')reply={session:null};
+ if(msg.type==='MCQ_SESSION_END'&&msg.payload?.manual)manualEnds++;
+ if(msg.type==='MCQ_SOLVE'){
+  requests.push(msg.payload);reply=response(msg.payload);
+  if(defer)return new Promise(resolve=>pending.push(()=>{if(cb)cb(reply);resolve(reply)}));
+ }
+ if(cb)cb(reply);return Promise.resolve(reply);
+}}}}
+window.chrome=testChrome(listeners);
+const page=document.getElementById('page'),sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));
+function render(count=3,variant=''){
+ page.innerHTML=fixture;
+ [...page.querySelectorAll('.question')].forEach((q,i)=>{if(i>=count)q.remove();else if(variant)q.querySelector('.question_text').append(' '+variant)});
+ page.querySelectorAll('input').forEach(input=>{input.disabled=false;input.removeAttribute('aria-disabled');input.checked=false;input.removeAttribute('checked');input.addEventListener('change',()=>changes++)});
+ page.insertAdjacentHTML('beforeend','<button id="submitQuiz">Submit Quiz</button>');page.querySelector('button').onclick=()=>submits++;
+}
+const qs=()=>[...page.querySelectorAll('.question')];
+const checked=q=>q.querySelectorAll('input:checked').length;
+function key(win,type,key='w',code='KeyW',extra={}){
+ const event=new win.KeyboardEvent(type,{key,code,altKey:true,shiftKey:true,bubbles:true,cancelable:true,...extra});win.document.dispatchEvent(event);return event;
+}
+const down=(win=window,extra={})=>key(win,'keydown','w','KeyW',extra),up=(win=window)=>key(win,'keyup');
+async function settle(win=window){await sleep(20);for(let n=0;n<100&&['loading','checking'].includes(win.__MCQ_DEBUG__.onePickStatus.phase);n++)await sleep(20)}
+async function tap(win=window){down(win);up(win);await settle(win)}
+const send=type=>listeners[0]({type},{},()=>{});
+</script><script src="../content/detector.js"></script><script src="../content/solver.js"></script><script>
+(async()=>{
+ const checks=[],check=(name,ok)=>checks.push([name,!!ok]);
+ try{
+  fixture=await(await fetch('./canvas-fixture.html')).text();render();
+  check('未按快捷键前不求解也不选择',requests.length===0&&qs().every(q=>checked(q)===0));
+  down(window,{altKey:false});up();await sleep(20);check('缺少修饰键不会触发',requests.length===0);
+  qs()[2].querySelector('input').focus();const event=down();await settle();
+  check('焦点在第三题时仍按页面顺序选择第一题',checked(qs()[0])===1&&checked(qs()[1])===0&&checked(qs()[2])===0);
+  check('第一题按正确字母D映射真实Canvas单选框',qs()[0].querySelectorAll('input[type=radio]')[3].checked);
+  check('第一次按键只请求一道题且内容是完整选项',requests.length===1&&requests[0].stem.startsWith('1.')&&requests[0].options.length===4&&requests[0].options.every(o=>o.text.length>1));
+  check('快捷键取消默认页面键盘操作',event.defaultPrevented);
+  down(window,{repeat:true});down();await sleep(20);check('长按或重复keydown不会选择第二题',requests.length===1&&checked(qs()[1])===0);up();
+  await tap();check('第二次按键继续第二题',checked(qs()[1])===1&&checked(qs()[2])===0&&requests.length===2);
+  await tap();check('第三次按键继续第三题',checked(qs()[2])===1&&requests.length===3);
+  await tap();check('全部完成后核对整页但不重复调用模型',requests.length===3&&__MCQ_DEBUG__.onePickStatus.phase==='checked'&&__MCQ_DEBUG__.onePickStatus.checked===3);
+  check('保存submit模式也不提交或启动自动流程',settings.mode==='submit'&&submits===0&&!__MCQ_DEBUG__.state.running&&!messages.includes('MCQ_SESSION_BEGIN'));
+  check('单项快捷键主动清除旧自动续跑会话',manualEnds>0);
+  check('原生选择触发Canvas可监听的change事件',changes>=3);
+  check('快捷键不打开页面悬浮窗口',!document.getElementById('__mcq_panel_host')||getComputedStyle(document.getElementById('__mcq_panel_host')).display==='none');
+  qs()[0].querySelectorAll('input[type=radio]')[0].checked=true;await tap();
+  check('用户改错后可使用缓存纠正第一题',qs()[0].querySelectorAll('input[type=radio]')[3].checked&&requests.length===3);
+  render();await tap();check('DOM重建后复用缓存并选择新的实际控件',checked(qs()[0])===1&&requests.length===3);
+  render(3,'highlight cache');send('MCQ_RESET');resetProgress=messages.filter(type=>type==='MCQ_SESSION_PROGRESS').length;const beforeHighlights=requests.length;
+  document.dispatchEvent(new KeyboardEvent('keydown',{key:'p',code:'KeyP',ctrlKey:true,altKey:true,bubbles:true}));await sleep(50);
+  document.dispatchEvent(new KeyboardEvent('keyup',{key:'p',code:'KeyP',ctrlKey:true,altKey:true,bubbles:true}));await tap();
+  check('可复用CtrlAltP准备的答案，不重复求解',requests.length===beforeHighlights+3&&checked(qs()[0])===1);
+  render(1,'readonly');page.querySelectorAll('input').forEach(input=>{input.disabled=true;input.setAttribute('aria-disabled','true')});const beforeReadonly=requests.length;await tap();
+  check('Canvas结果页及禁用选项不会被修改',requests.length===beforeReadonly&&checked(qs()[0])===0);
+  render(2,'mixed');page.insertAdjacentHTML('afterbegin','<div class="question numerical_question"><div class="question_text">How many hours should be worked?</div><input type="text" class="question_input" value=""></div>');await tap();
+  check('跳过数字题，只选择MCQ',page.querySelector('input[type=text]').value===''&&checked(qs()[1])===1&&checked(qs()[2])===0);
+  render(2,'incomplete');qs()[0].querySelector('.question_text').textContent='Incomplete lettered options without the matching option text.';await tap();
+  check('跳过无法完整识别的题目，继续下一道MCQ',checked(qs()[0])===0&&checked(qs()[1])===1);
+  render(1,'multi following');const single=page.querySelector('.question');
+  page.insertAdjacentHTML('afterbegin','<div class="question multiple_answers_question"><div class="question_text">Which two choices are correct?</div><label><input type="checkbox" name="multi">First choice</label><label><input type="checkbox" name="multi">Second choice</label><label><input type="checkbox" name="multi">Third choice</label></div>');
+  const multi=page.querySelector('.multiple_answers_question');const beforeMulti=requests.length;await tap();
+  check('多选题第一次只勾选一个正确项',multi.querySelectorAll('input')[0].checked&&!multi.querySelectorAll('input')[2].checked&&checked(single)===0);
+  await tap();check('多选题第二次勾选剩余正确项并复用答案',multi.querySelectorAll('input')[0].checked&&multi.querySelectorAll('input')[2].checked&&requests.length===beforeMulti+1&&checked(single)===0);
+  await tap();check('多选题正确项选齐后继续下一题',checked(single)===1&&submits===0);
+  render(1,'bad response');replyMode='bad';await tap();check('模型返回无效字母时不盲选',checked(qs()[0])===0&&__MCQ_DEBUG__.onePickStatus.phase==='error');
+  replyMode='tooMany';await tap();check('单选题返回多个答案时拒绝填写',checked(qs()[0])===0);replyMode='normal';await tap();check('失败后可再次按键重试',checked(qs()[0])===1);
+  render(1,'missing key');settings.apiKey='';const beforeNoKey=requests.length;await tap();check('缺少API Key且无缓存时不调用模型',requests.length===beforeNoKey&&checked(qs()[0])===0&&__MCQ_DEBUG__.onePickStatus.error.includes('API Key'));settings.apiKey='fake';
+  render(1,'busy');defer=true;down();up();await sleep(20);down();up();await sleep(20);
+  check('请求未完成时再次按键不会排队或重复请求',pending.length===1);pending.shift()();await settle();check('忙碌期间最终只选择一个选项',checked(qs()[0])===1);defer=false;
+  render(1,'Esc pending');defer=true;down();up();await sleep(20);key(window,'keydown','Escape','Escape');pending.shift()();await settle();check('Esc会取消未完成请求的点击',checked(qs()[0])===0);defer=false;
+  render(1,'changed question');defer=true;down();up();await sleep(20);qs()[0].querySelector('.question_text').append(' Question replaced.');pending.shift()();await settle();check('请求过程中题目改变时不选择新题选项',checked(qs()[0])===0&&__MCQ_DEBUG__.onePickStatus.phase==='error');defer=false;
+  render(1,'same question rebuilt');defer=true;down();up();await sleep(20);const detached=qs()[0];render(1,'same question rebuilt');pending.shift()();await settle();check('同题重建后只选择新的DOM控件',checked(detached)===0&&checked(qs()[0])===1);defer=false;
+  render(1,'blur pending');defer=true;down();up();await sleep(20);window.dispatchEvent(new Event('blur'));pending.shift()();await settle();check('窗口失焦会取消后续点击',checked(qs()[0])===0);defer=false;
+  render(1,'cache click cancellation');send('MCQ_RESET');resetProgress=messages.filter(type=>type==='MCQ_SESSION_PROGRESS').length;
+  document.dispatchEvent(new KeyboardEvent('keydown',{key:'p',code:'KeyP',ctrlKey:true,altKey:true,bubbles:true}));await sleep(50);
+  document.dispatchEvent(new KeyboardEvent('keyup',{key:'p',code:'KeyP',ctrlKey:true,altKey:true,bubbles:true}));
+  down();up();await sleep(20);key(window,'keydown','Escape','Escape');await sleep(160);check('滚动等待期间按Esc也能阻止点击',checked(qs()[0])===0);
+  render(17,'full-page sequential pass');const bulkStart=requests.length,expected=__MCQ_DETECTOR__.collect().map(q=>q.stem);let sequential=true;
+  for(let i=0;i<17;i++){await tap();sequential=sequential&&requests.length===bulkStart+i+1&&qs().every((q,index)=>checked(q)===(index<=i?1:0))}
+  check('实际Canvas17题整页逐次按顺序选择，每次仅处理一题',expected.length===17&&sequential);
+  check('第11到17题长题干及选项完整，模型请求顺序一致',requests.slice(bulkStart).every((q,i)=>q.stem===expected[i]&&q.options.length===4)&&requests.slice(bulkStart+10).every(q=>q.options.every(o=>o.text.length>1)));
+  render(1,'frame should not select parent');
+  const frame=document.createElement('iframe'),loaded=new Promise(resolve=>frame.onload=resolve),detector=new URL('../content/detector.js',location.href).href,solver=new URL('../content/solver.js',location.href).href;
+  frame.srcdoc='<div class="question multiple_choice_question"><div class="question_text">Which embedded option is correct?</div><label><input type="radio" name="f">Embedded first</label><label><input type="radio" name="f">Embedded second</label><label><input type="radio" name="f">Embedded third</label></div><scr'+'ipt>window.chrome=parent.testChrome()</scr'+'ipt><scr'+'ipt src="'+detector+'"></scr'+'ipt><scr'+'ipt src="'+solver+'"></scr'+'ipt>';
+  document.body.appendChild(frame);await loaded;const beforeFrame=requests.length;await tap(frame.contentWindow);
+  check('iframe内按键只选择该frame中的一个正确选项',requests.length===beforeFrame+1&&frame.contentDocument.querySelectorAll('input')[2].checked&&checked(qs()[0])===0);
+  check('全部快捷键测试均未提交或启动自动翻页会话',submits===0&&messages.filter(type=>type==='MCQ_SESSION_PROGRESS').length===resetProgress);
+ }catch(error){check('无测试异常: '+error.stack,false)}
+ document.getElementById('verdict').innerHTML=checks.map(([name,ok])=>'<div class="'+(ok?'pass':'fail')+'">'+(ok?'PASS':'FAIL')+' — '+name+'</div>').join('');
+ document.getElementById('out').textContent=JSON.stringify({checks,apiCalls:requests.length,submits,changes,status:__MCQ_DEBUG__.onePickStatus},null,2);window.__TEST_DONE__=true;
+})();
+</script></html>

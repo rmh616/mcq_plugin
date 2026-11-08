@@ -1,0 +1,84 @@
+<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>Canvas numeric input compatibility</title>
+<style>body {font:14px/1.5 sans-serif;margin:24px} .question {border:1px solid #ddd;padding:14px;margin:10px} .pass {color:green} .fail {color:red}</style>
+<div id="verdict">运行中…</div><pre id="out"></pre><div id="page"></div>
+<script>
+// Screenshot-derived question; the former full saved HTML is no longer available.
+const STEM = '18. Pham can work as many or as few hours as she wants at the college bookstore for $12 per hour. But due to her hectic schedule, she has just 15 hours per week that she can spend working at either the bookstore or at other potential jobs. One potential job, at a café, will pay her $15 per hour for up to 6 hours per week. She has another job offer at a garage that will pay her $13 an hour for up to 5 hours per week. And she has a potential job at a daycare center that will pay her $11.50 per hour for as many hours as she can work. If her goal is to maximize the amount of money she can make each week, how many hours will she work at the bookstore?';
+const page = document.getElementById('page'), listeners = [], requests = [], events = [];
+let valueReply = '4', submits = 0;
+const settings = {apiKey:'fake',mode:'select',actionDelay:10,submitDelay:10,pageTimeout:1500,concurrency:1};
+window.chrome = {
+  runtime: {
+    onMessage:{addListener:fn=>listeners.push(fn)},
+    sendMessage(msg,cb) {
+      let reply={ok:true};
+      if(msg.type==='MCQ_SOLVE') {requests.push(msg.payload); reply={ok:true,value:valueReply,confidence:1,reason:'local numeric stub'};}
+      if(cb)cb(reply);
+      return Promise.resolve(reply);
+    }
+  }, storage:{local:{get:async()=>({mcqSettings:settings})}}
+};
+const send=type=>new Promise(resolve=>listeners[0]({type},{},resolve));
+const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));
+async function run() {await send('MCQ_START'); await sleep(25); for(let n=0;n<100&&window.__MCQ_DEBUG__.state.running;n++)await sleep(100);}
+function numericHtml(locked=true,type='text') {
+ return '<div class="display_question question numerical_question" id="question_numeric"><div class="header"><span class="name">Question 19</span><span>1 / 1 pts</span></div><div class="question_text"></div><div class="answers"><div class="user_answer"><input class="question_input" id="numeric_input" name="question_19" type="'+type+'" value="'+(locked?'4':'')+'" '+(locked?'disabled aria-disabled="true"':'')+'></div><div class="numerical_exact_answer answer_type" style="display:none"><input type="text" value="999"></div><div class="answer_feedback">Pham will choose to work at the bookstore...</div><ul><li>4 (with margin: 0)</li><li>0 (with margin: 0)</li><li>0 (with margin: 0)</li><li>0 (with margin: 0)</li></ul></div></div>';
+}
+function render(locked=true,type='text') {page.innerHTML=numericHtml(locked,type); page.querySelector('.question_text').textContent=STEM;}
+</script><script src="../content/detector.js"></script><script src="../content/solver.js"></script>
+<script>
+(async()=>{
+ const checks=[],check=(name,ok)=>checks.push([name,!!ok]),D=window.__MCQ_DETECTOR__,debug=window.__MCQ_DEBUG__;
+ try {
+  render();
+  const review=D.collect(document,{includeReadOnly:true}),q=review[0];
+  check('单输入数字题被扫描为一道题',review.length===1&&q.type==='numeric');
+  check('Canvas题号19与题干编号18分别保留',q.questionNumber==='19'&&q.stem.startsWith('18.'));
+  check('题干完整且不含分数/解析/答案列表',q.stem===STEM);
+  check('下方4/0/0/0没有被伪造为选择题选项',q.options.length===0);
+  check('识别可见实际输入框，排除隐藏评分字段',q.answerInput.id==='numeric_input');
+  check('结果页数字题保持只读、不进入待答队列',q.readOnly&&debug.pendingQuestions().length===0);
+  const scan=await send('MCQ_SCAN'),shadow=document.getElementById('__mcq_panel_host').shadowRoot;
+  check('面板显示数字题与Canvas第19题',scan.count===1&&shadow.querySelector('.pick').textContent==='数字'&&shadow.querySelector('.why').textContent.includes('第 19 题'));
+  check('扫描高亮输入框但不更改已提交答案',q.answerInput.classList.contains('__mcq_scan')&&q.answerInput.value==='4'&&q.answerInput.disabled);
+  await run();check('结果页点击开始不调用模型',requests.length===0&&!debug.state.running);
+  render(false);
+  page.insertAdjacentHTML('beforeend','<input type="text" id="unrelated" value="not a quiz"><input type="number" id="unrelated_number">');
+  const active=D.collect()[0],input=active.answerInput;
+  check('只识别Canvas题目内的字段，忽略普通文本和数字框',D.collect().length===1&&active.type==='numeric'&&!active.readOnly);
+  check('数字题hash不受答案值或只读状态影响',active.hash===q.hash);
+  let controlledSets=0;
+  const native=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value');
+  Object.defineProperty(input,'value',{get(){return native.get.call(this)},set(v){controlledSets++;native.set.call(this,v)}});
+  input.addEventListener('input',()=>events.push('input'));input.addEventListener('change',()=>events.push('change'));
+  await run();
+  check('模型仅接收numeric题干而不接收旧答案或反馈',requests.length===1&&requests[0].type==='numeric'&&requests[0].stem===STEM&&requests[0].options.length===0);
+  check('数字答案4写入实际输入框',input.value==='4');
+  check('原生setter触发受控组件input/change事件',controlledSets===0&&events.join(',')==='input,change');
+  check('填写后高亮输入框',input.classList.contains('__mcq_pick'));
+  render(false);valueReply='4 hours';settings.mode='submit';
+  page.insertAdjacentHTML('beforeend','<button id="bad-submit">Submit Quiz</button>');page.querySelector('button').onclick=()=>submits++;
+  await run();check('拒绝含单位回复、不填框也不提交',page.querySelector('#numeric_input').value===''&&submits===0&&debug.state.stats.failed===1);
+  render(false);valueReply=0;settings.mode='select';await run();
+  check('数值0是有效答案',page.querySelector('#numeric_input').value==='0');
+  render(false);page.querySelector('.question').classList.replace('numerical_question','calculated_question');valueReply='-2.5';await run();
+  check('公式型数字题支持负小数',page.querySelector('#numeric_input').value==='-2.5');
+  render(false);settings.mode='highlight';valueReply='4';await run();
+  check('仅高亮模式不填写数字',page.querySelector('#numeric_input').value===''&&page.querySelector('#numeric_input').classList.contains('__mcq_pick'));
+  render(false,'number');page.querySelector('input').max='3';settings.mode='submit';valueReply='4';
+  page.insertAdjacentHTML('beforeend','<button>Submit Quiz</button>');page.querySelector('button').onclick=()=>submits++;
+  await run();check('原生输入限制不满足时不会提交',submits===0&&!debug.state.running);
+  render(false);page.querySelector('.answers').insertAdjacentHTML('beforeend','<input type="text" class="question_input">');
+  const before=requests.length;await run();check('多个数字空尚未对应时标记缺失且不调用模型',D.collect()[0].incomplete&&requests.length===before);
+  render(false,'number');settings.mode='submit';valueReply='4';
+  const markup=page.innerHTML;page.innerHTML='<form id="quiz_form">'+markup+'<button type="submit">Submit Quiz</button></form>';
+  page.querySelector('form').onsubmit=event=>{event.preventDefault();submits++;render(true,'number')};
+  await run();
+  check('数字题提交一次后自动停在只读结果页',submits===1&&!debug.state.running&&D.collect(document,{includeReadOnly:true})[0].readOnly);
+  check('数字题提交结束不等待超时',debug.state.stats.timeouts===0);
+ }catch(error){check('无测试异常: '+error.message,false)}
+ document.getElementById('verdict').innerHTML=checks.map(([name,ok])=>'<div class="'+(ok?'pass':'fail')+'">'+(ok?'PASS':'FAIL')+' — '+name+'</div>').join('');
+ document.getElementById('out').textContent=JSON.stringify({checks,apiCalls:requests.length,submits,events},null,2);
+ window.__TEST_DONE__=true;
+})();
+</script></html>

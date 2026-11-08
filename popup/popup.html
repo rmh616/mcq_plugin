@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <link rel="stylesheet" href="popup.css" />
+    <title>mas</title>
+  </head>
+  <body>
+    <header>
+      <h1>mas</h1>
+      <span id="host"></span>
+    </header>
+
+    <div class="actions">
+      <button id="scan">扫描本页</button>
+      <button id="run" class="pri">开始</button>
+      <button id="stop" class="danger">停止</button>
+    </div>
+    <div id="status" class="status"></div>
+
+    <section>
+      <h2>模型接口</h2>
+      <label>
+        API Key
+        <input id="apiKey" type="password" placeholder="sk-..." autocomplete="off" spellcheck="false" />
+      </label>
+      <label>
+        Base URL
+        <input id="baseUrl" type="text" placeholder="https://api.openai.com/v1" spellcheck="false" />
+        <small>任何 OpenAI 兼容端点都行（自建代理 / 中转 / Azure 网关）。</small>
+      </label>
+      <label>
+        模型
+        <input id="model" type="text" list="models" spellcheck="false" />
+        <datalist id="models">
+          <option value="gpt-4o-mini"></option>
+          <option value="gpt-4o"></option>
+          <option value="gpt-4.1"></option>
+          <option value="gpt-4.1-mini"></option>
+          <option value="o4-mini"></option>
+        </datalist>
+        <small>图片题需模型和接口均支持图像输入；会将该题图片连同文字发送到此接口。图片读取失败会停止该题。</small>
+      </label>
+      <button id="test" class="ghost">测试连接</button>
+    </section>
+
+    <section>
+      <h2>行为</h2>
+      <label>
+        模式
+        <select id="mode">
+          <option value="highlight">仅高亮建议（不点击）</option>
+          <option value="select">自动选中，不提交</option>
+          <option value="submit">自动选中并提交 / 翻页</option>
+        </select>
+        <small>按住 <kbd>Ctrl</kbd> + <kbd>Alt</kbd> + <kbd>P</kbd> 查看高亮，松开隐藏。每按一次 <kbd>Alt</kbd> + <kbd>Shift</kbd> + <kbd>W</kbd>，按顺序选择一个正确MCQ选项；全部选完后再按一次，按已有模型答案核对整页并一次修正错选、漏选和多勾，不提交。快捷键均隐藏悬浮窗口，<kbd>Esc</kbd> 可中断。首次使用先填写 API Key。</small>
+      </label>
+      <div class="grid">
+        <label>
+          每题间隔 (ms)
+          <input id="actionDelay" type="number" min="0" step="100" />
+        </label>
+        <label>
+          提交前等待 (ms)
+          <input id="submitDelay" type="number" min="0" step="100" />
+        </label>
+        <label>
+          等下一题超时 (ms)
+          <input id="pageTimeout" type="number" min="1000" step="500" />
+        </label>
+        <label>
+          最多翻页轮数
+          <input id="maxRounds" type="number" min="1" step="1" />
+        </label>
+        <label>
+          并发请求数
+          <input id="concurrency" type="number" min="1" max="6" step="1" />
+          <small>一页一题时无效。</small>
+        </label>
+      </div>
+      <label class="check">
+        <input id="useCache" type="checkbox" />
+        <span>缓存答案（同一题不重复花钱）</span>
+      </label>
+      <label>
+        附加提示词
+        <textarea id="extraPrompt" rows="2" placeholder="例如：这是大一微观经济学的练习题，按课本定义作答。"></textarea>
+      </label>
+    </section>
+
+    <footer>
+      <button id="clearCache" class="ghost small">清空答案缓存</button>
+      <button id="reset" class="ghost small">重置本页去重</button>
+    </footer>
+
+    <p class="note">
+      自动提交模式会直接替你点下提交按钮。用在计分考试上属于学术不端 —— 请只在练习题、自测题库或你自己的页面上使用。页面里按 <kbd>Esc</kbd> 可立即中断。
+    </p>
+
+    <script src="popup.js"></script>
+  </body>
+</html>

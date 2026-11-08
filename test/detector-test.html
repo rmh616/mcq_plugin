@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <title>Detector 自测</title>
+    <style>
+      body { font: 14px/1.6 -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif; margin: 24px; }
+      iframe { width: 100%; height: 300px; border: 1px solid #ccc; }
+      pre { background: #0f172a; color: #e2e8f0; padding: 12px; border-radius: 6px; overflow: auto; font-size: 12px; }
+      .pass { color: #15803d; font-weight: 600; }
+      .fail { color: #b91c1c; font-weight: 600; }
+    </style>
+  </head>
+  <body>
+    <h1>Detector 自测</h1>
+    <p>把 sample-quiz.html 的题目结构原样复制到本页，跑 <code>__MCQ_DETECTOR__.collect()</code>。</p>
+    <div id="fixture"></div>
+    <h2>结果</h2>
+    <div id="verdict"></div>
+    <pre id="out">loading…</pre>
+
+    <script>
+      // 与 sample-quiz.html 保持一致的题目结构
+      document.getElementById('fixture').innerHTML = `
+        <div class="q">
+          <div class="stem">1. 水的化学式是什么？</div>
+          <label class="opt"><input type="radio" name="q1" id="q1a"> <span>CO2</span></label>
+          <label class="opt"><input type="radio" name="q1" id="q1b"> <span>H2O</span></label>
+          <label class="opt"><input type="radio" name="q1" id="q1c"> <span>NaCl</span></label>
+          <label class="opt"><input type="radio" name="q1" id="q1d"> <span>O2</span></label>
+        </div>
+        <div class="q hidden-radio">
+          <div class="stem">2. Which of the following is a prime number?</div>
+          <input type="radio" name="q2" id="q2a"><label for="q2a">A. 21</label>
+          <input type="radio" name="q2" id="q2b"><label for="q2b">B. 27</label>
+          <input type="radio" name="q2" id="q2c"><label for="q2c">C. 29</label>
+          <input type="radio" name="q2" id="q2d"><label for="q2d">D. 33</label>
+        </div>
+        <div class="q">
+          <div class="stem">3. 以下哪些是编程语言？（多选）</div>
+          <div class="opts">
+            <label class="opt"><input type="checkbox" name="q3a"> Python</label>
+            <label class="opt"><input type="checkbox" name="q3b"> HTML</label>
+            <label class="opt"><input type="checkbox" name="q3c"> Rust</label>
+            <label class="opt"><input type="checkbox" name="q3d"> JSON</label>
+          </div>
+        </div>
+        <div class="q">
+          <div class="stem">4. 《百年孤独》的作者是谁？</div>
+          <div role="radiogroup" aria-label="q4">
+            <div role="radio" aria-checked="false" tabindex="0">博尔赫斯</div>
+            <div role="radio" aria-checked="false" tabindex="0">马尔克斯</div>
+            <div role="radio" aria-checked="false" tabindex="0">略萨</div>
+            <div role="radio" aria-checked="false" tabindex="0">科塔萨尔</div>
+          </div>
+        </div>
+        <div class="q">
+          <div class="stem">5. The capital of Australia is:</div>
+          <ul class="choices">
+            <li>A. Sydney</li><li>B. Melbourne</li><li>C. Canberra</li><li>D. Perth</li>
+          </ul>
+        </div>
+        <div class="toggle">
+          <label><input type="radio" name="theme" checked> 浅色</label>
+          <label><input type="radio" name="theme"> 深色</label>
+        </div>
+
+        <!-- Q6：抄自 Sage Vantage 的真实结构。三个坑：
+             (a) <label role="radio"> 反过来包着 <input>
+             (b) 题干在选项容器的叔叔节点里，只能靠 aria-labelledby 找到
+             (c) 只有 True/False 两个选项 -->
+        <fieldset>
+          <div class="question-area" id="booleanType"><p>Individuals with growth mindsets become argumentative when presented with negative comments.</p></div>
+          <legend class="visually-hidden">True/False Question</legend>
+          <div class="answer-area">
+            <div class="list" role="list" aria-labelledby="booleanType">
+              <div class="choice" role="listitem" tabindex="0" aria-labelledby="answer-1334962636" title="not checked">
+                <label role="radio">
+                  <span class="jcf-radio jcf-unchecked"><input tabindex="-1" type="radio" value="1334962636" name="answer" style="position:absolute;opacity:0"><span></span></span>
+                  <span class="check-name" id="answer-1334962636">True</span>
+                </label>
+              </div>
+              <div class="choice" role="listitem" tabindex="0" aria-labelledby="answer-1334962637" title="not checked">
+                <label role="radio">
+                  <span class="jcf-radio jcf-unchecked"><input tabindex="-1" type="radio" value="1334962637" name="answer" style="position:absolute;opacity:0"><span></span></span>
+                  <span class="check-name" id="answer-1334962637">False</span>
+                </label>
+              </div>
+            </div>
+          </div>
+        </fieldset>`;
+      // 让 hidden-radio 的 input 真的不可见
+      const st = document.createElement('style');
+      st.textContent =
+        '.hidden-radio input{position:absolute;opacity:0;width:0;height:0} .hidden-radio label{display:block;padding:4px}' +
+        '.visually-hidden{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)}' +
+        '.choice{padding:6px 10px;border:1px solid #cbd5e1;border-radius:6px;margin-bottom:6px}' +
+        '.choice label{display:block;cursor:pointer}';
+      document.head.appendChild(st);
+    </script>
+    <script>
+      // 带时间戳加载，避免预览/浏览器缓存住旧版 detector.js
+      document.write('<script src="../content/detector.js?v=' + Date.now() + '"><\/script>');
+    </script>
+    <script>
+      const qs = window.__MCQ_DETECTOR__.collect();
+      const dump = qs.map((q) => ({
+        type: q.type,
+        stem: q.stem.length > 90 ? '…' + q.stem.slice(-90) : q.stem,
+        options: q.options.map((o) => o.letter + '. ' + o.text)
+      }));
+      document.getElementById('out').textContent = JSON.stringify(dump, null, 2);
+
+      const SAGE = 'Individuals with growth mindsets become argumentative when presented with negative comments.';
+      const q6 = qs[5];
+      const checks = [
+        ['识别出 6 道题（主题切换开关被排除）', qs.length === 6],
+        ['Q1 标准 radio 四个选项', qs[0] && qs[0].options.length === 4 && qs[0].options[1].text === 'H2O'],
+        ['Q1 题干包含「化学式」', qs[0] && qs[0].stem.includes('化学式')],
+        ['Q2 隐藏 radio 也被抓到，且 A. 前缀被剥掉', qs[1] && qs[1].options[2].text === '29'],
+        ['Q2 点击目标是 label 而非隐藏 input', qs[1] && qs[1].options[0].clickTarget.tagName === 'LABEL'],
+        ['Q3 识别为多选', qs[2] && qs[2].type === 'multi'],
+        ['Q4 ARIA radiogroup', qs[3] && qs[3].options.length === 4 && qs[3].options[1].text === '马尔克斯'],
+        ['Q2 题干不含残留的选项前缀', qs[1] && qs[1].stem === '2. Which of the following is a prime number?'],
+        ['Q5 纯 li 列表', qs[4] && qs[4].options[2].text === 'Canberra'],
+        ['Q5 题干干净', qs[4] && qs[4].stem === '5. The capital of Australia is:'],
+        ['Q6(Sage) 被识别出来了，True/False 两个选项', !!q6 && q6.options.length === 2 && q6.options[0].text === 'True' && q6.options[1].text === 'False'],
+        ['Q6 题干取自 aria-labelledby，没有混入 legend 噪音', !!q6 && q6.stem === SAGE],
+        ['Q6 点击目标是可见的 label，不是 opacity:0 的 input', !!q6 && q6.options[0].clickTarget.tagName === 'LABEL'],
+        ['所有题都有非空 hash', qs.every((q) => q.hash && q.hash.length > 1)],
+        ['hash 互不相同', new Set(qs.map((q) => q.hash)).size === qs.length]
+      ];
+      document.getElementById('verdict').innerHTML = checks
+        .map(([name, ok]) => `<div class="${ok ? 'pass' : 'fail'}">${ok ? 'PASS' : 'FAIL'} — ${name}</div>`)
+        .join('');
+    </script>
+  </body>
+</html>

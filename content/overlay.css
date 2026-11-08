@@ -1,0 +1,50 @@
+/* 注入到页面本身的高亮样式。类名加前缀，避免和站点样式撞车。 */
+
+.__mcq_scan {
+  transition: outline-color 0.15s ease;
+}
+
+/* 模型选中的答案 */
+html.__mas_answers_visible .__mcq_pick {
+  outline: 3px solid #16a34a !important;
+  outline-offset: 2px !important;
+  border-radius: 4px !important;
+  background-color: rgba(22, 163, 74, 0.08) !important;
+}
+
+/* 低置信度（confidence < 0.5） */
+html.__mas_answers_visible .__mcq_pick_warn {
+  outline: 3px solid #f59e0b !important;
+  outline-offset: 2px !important;
+  border-radius: 4px !important;
+  background-color: rgba(245, 158, 11, 0.1) !important;
+}
+
+/* 「扫描」按钮的临时预览标记 */
+.__mcq_scan {
+  outline: 2px dashed #3b82f6 !important;
+  outline-offset: 2px !important;
+  border-radius: 4px !important;
+}
+
+#__mcq_panel_host {
+  all: initial;
+}
+
+/* 原生下拉框关闭时看不到候选选项，用同样受快捷键控制的文字显示建议。 */
+.__mas_select_hint {
+  display: none !important;
+}
+html.__mas_answers_visible .__mas_select_hint {
+  display: inline-block !important;
+  margin-inline-start: 8px !important;
+  padding: 3px 7px !important;
+  border-radius: 4px !important;
+  color: #166534 !important;
+  background: #dcfce7 !important;
+  font: 13px/1.5 sans-serif !important;
+}
+html.__mas_answers_visible .__mas_select_hint_warn {
+  color: #92400e !important;
+  background: #fef3c7 !important;
+}

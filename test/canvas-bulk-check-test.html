@@ -1,0 +1,64 @@
+<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>Canvas large-page cache and final correction</title>
+<style>body{font:14px sans-serif;margin:20px}.question{margin:10px;padding:8px;border:1px solid #ddd}label{display:block}.pass{color:green}.fail{color:red}</style>
+<div id="verdict">运行中…</div><pre id="out"></pre><div id="page"></div>
+<script>
+const requests=[],messages=[],events=[];let submits=0,scrolls=0;
+Element.prototype.scrollIntoView=function(){scrolls++};
+const page=document.getElementById('page');
+page.innerHTML=Array.from({length:100},(_,n)=>'<div class="question multiple_choice_question" id="q'+n+'"><div class="question_text">Large page question '+n+': choose the correct category.</div>'+['Alpha','Beta','Gamma','Delta'].map((t,i)=>'<input type="radio" id="q'+n+'_'+i+'" name="q'+n+'"><label for="q'+n+'_'+i+'">'+t+'</label>').join('')+'</div>').join('')+
+ '<div class="question multiple_answers_question" id="multi"><div class="question_text">Which two answers are correct?</div>'+['Alpha','Beta','Gamma'].map((t,i)=>'<label><input type="checkbox" name="m'+i+'">'+t+'</label>').join('')+'</div><button id="submitQuiz">Submit Quiz</button>';
+document.getElementById('submitQuiz').onclick=()=>submits++;
+for(const input of page.querySelectorAll('input'))input.addEventListener('change',()=>{const q=input.closest('.question');q.classList.add('answered');events.push(q.id)});
+window.chrome={storage:{local:{get:async()=>({mcqSettings:{apiKey:'fake',mode:'submit',actionDelay:0}})}},runtime:{onMessage:{addListener(){}},sendMessage(msg,cb){
+ messages.push(msg.type);let reply={ok:true};if(msg.type==='MCQ_SESSION_GET')reply={session:null};
+ if(msg.type==='MCQ_SOLVE'){requests.push(msg.payload);reply={ok:true,letters:msg.payload.type==='multi'?['A','C']:['D'],confidence:1,reason:'local bulk test'}}
+ if(cb)cb(reply);return Promise.resolve(reply);
+}}};
+const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));
+const key=type=>document.dispatchEvent(new KeyboardEvent(type,{key:'w',code:'KeyW',altKey:true,shiftKey:true,bubbles:true,cancelable:true}));
+async function tap(){key('keydown');key('keyup');await sleep(10);for(let i=0;i<200&&['loading','checking'].includes(__MCQ_DEBUG__.onePickStatus.phase);i++)await sleep(10)}
+const inputs=n=>[...document.getElementById('q'+n).querySelectorAll('input')];
+const multi=()=>[...document.getElementById('multi').querySelectorAll('input')];
+const esc=()=>document.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true}));
+</script><script src="../content/detector.js"></script><script src="../content/solver.js"></script><script>
+(async()=>{
+ const checks=[],check=(name,ok)=>checks.push([name,!!ok]),debug=__MCQ_DEBUG__;
+ try{
+  let ordered=true;
+  for(let i=0;i<100;i++){
+   await tap();ordered=ordered&&requests.length===i+1&&inputs(i)[3].checked;
+   if(i===20){inputs(0)[0].checked=true;inputs(1)[3].checked=false}
+  }
+  check('100题保持顺序且不因为早先选项改变而倒退',ordered&&requests.length===100);
+  check('顺序完成前不会提前逐题纠正前面错选',inputs(0)[0].checked&&!inputs(1).some(input=>input.checked));
+  await tap();await tap();multi()[1].checked=true;inputs(98)[1].checked=true;
+  check('最后一道多选题逐项完成，故意多勾项留待末尾核对',multi().every(input=>input.checked)&&requests.length===101);
+  const parses=debug.scanStats.canvasParses;
+  check('多题索引仅按题缓存解析，没有每次全页重扫',debug.scanStats.fullScans===0&&parses<=230);
+  events.length=0;scrolls=0;let uiTick=false;setTimeout(()=>uiTick=true,0);await tap();
+  check('最后再按一次即核对全页101题',debug.onePickStatus.phase==='checked'&&debug.onePickStatus.checked===101);
+  check('一次操作修正所有错选、漏选和多勾题',debug.onePickStatus.corrected===4&&inputs(0)[3].checked&&inputs(1)[3].checked&&inputs(98)[3].checked&&multi()[0].checked&&!multi()[1].checked&&multi()[2].checked);
+  check('已正确题目保持不动，只更新四道问题题目',new Set(events).size===4&&['q0','q1','q98','multi'].every(id=>events.includes(id)));
+  check('整页核对复用缓存，不再调用101次模型',requests.length===101);
+  check('整页修正不逐题滚动页面',scrolls===0);
+  check('大批检查期间让出事件循环，页面仍能响应',uiTick);
+  const oldParses=debug.scanStats.canvasParses;events.length=0;await tap();
+  check('再次核对全部正确时零修改零请求',debug.onePickStatus.checked===101&&debug.onePickStatus.corrected===0&&events.length===0&&requests.length===101);
+  check('仅选中状态核对不重新解析题干',debug.scanStats.canvasParses===oldParses);
+  document.querySelector('#q50 .question_text').append(' Revised content.');const beforeEdit=debug.scanStats.canvasParses;await tap();
+  check('题干改变时仅该题重新解析和求解',debug.scanStats.canvasParses-beforeEdit<=2&&requests.length===102&&requests.at(-1).stem.includes('Revised content'));
+  await tap();check('更新后的题目仍可参与整页核对',debug.onePickStatus.phase==='checked'&&debug.onePickStatus.checked===101);
+  inputs(2)[0].checked=true;inputs(3)[0].checked=true;const reject=()=>inputs(2)[0].checked=true;inputs(2)[3].addEventListener('change',reject);await tap();
+  check('站点拒绝某题修正时报告失败，继续修正其它题',debug.onePickStatus.failed===1&&debug.onePickStatus.corrected===1&&inputs(2)[0].checked&&inputs(3)[3].checked);
+  inputs(2)[3].removeEventListener('change',reject);await tap();check('失败题可在下一次整页核对中重试',debug.onePickStatus.phase==='checked'&&inputs(2)[3].checked);
+  inputs(0)[0].checked=true;inputs(1)[0].checked=true;const cancel=()=>esc();inputs(0)[3].addEventListener('change',cancel);await tap();inputs(0)[3].removeEventListener('change',cancel);
+  check('整页修正中Esc可阻止后续题目的点击',debug.onePickStatus.phase==='cancelled'&&inputs(0)[3].checked&&inputs(1)[0].checked);
+  inputs(95).forEach(input=>input.disabled=true);await tap();
+  check('禁用只读题不参与后续修正',debug.onePickStatus.checked===100&&inputs(95).every(input=>input.disabled));
+  check('全部操作从不提交或建立自动续跑',submits===0&&!messages.includes('MCQ_SESSION_BEGIN')&&!messages.includes('MCQ_SESSION_PROGRESS'));
+  check('整页修正不弹出悬浮窗口',!document.getElementById('__mcq_panel_host')||getComputedStyle(document.getElementById('__mcq_panel_host')).display==='none');
+ }catch(error){check('无测试异常: '+error.stack,false)}
+ document.getElementById('verdict').innerHTML=checks.map(([name,ok])=>'<div class="'+(ok?'pass':'fail')+'">'+(ok?'PASS':'FAIL')+' — '+name+'</div>').join('');
+ document.getElementById('out').textContent=JSON.stringify({checks,apiCalls:requests.length,stats:debug.scanStats,status:debug.onePickStatus,submits},null,2);window.__TEST_DONE__=true;
+})();
+</script></html>

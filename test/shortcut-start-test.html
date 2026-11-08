@@ -1,0 +1,93 @@
+<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>mas shortcut startup</title>
+<link rel="stylesheet" href="../content/overlay.css">
+<style>body{font:14px/1.5 sans-serif;margin:24px}label{display:block}.pass{color:green}.fail{color:red}iframe{width:400px;height:200px}</style>
+<div id="verdict">运行中…</div><pre id="out"></pre><div id="page"></div>
+<script>
+const contexts=[],requests=[],pending=[],sessions=[];
+const settings={apiKey:'fake',mode:'submit',concurrency:2,actionDelay:0};
+let clicked=0;
+function testChrome(win){
+ const ctx={win,listeners:[]};contexts.push(ctx);
+ return {storage:{local:{get:async()=>({mcqSettings:settings})}},runtime:{onMessage:{addListener:fn=>ctx.listeners.push(fn)},sendMessage(msg,cb){
+  if(msg.type==='MCQ_SOLVE'){
+   requests.push(msg.payload);return new Promise(resolve=>pending.push(reply=>{if(cb)cb(reply);resolve(reply)}));
+  }
+  let reply={ok:true};
+  if(msg.type.startsWith('MCQ_SESSION_')){sessions.push(msg.type);reply={session:null}}
+  if(msg.type==='MAS_HIGHLIGHTS_SET')for(const receiver of contexts)for(const fn of receiver.listeners)fn({type:'MAS_HIGHLIGHTS',payload:msg.payload},{},()=>{});
+  if(msg.type==='MCQ_RELAY')for(const fn of contexts[0].listeners)fn({type:'MCQ_PANEL',payload:msg.payload},{},()=>{});
+  if(cb)cb(reply);return Promise.resolve(reply);
+ }}};
+}
+window.chrome=testChrome(window);
+const page=document.getElementById('page'),sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));
+function markup(n){return '<fieldset><legend>Question '+n+': Which letter should be recommended?</legend><label><input type="radio" name="q'+n+'">Alpha</label><label><input type="radio" name="q'+n+'">Beta</label><label><input type="radio" name="q'+n+'">Gamma</label><label><input type="radio" name="q'+n+'">Delta</label></fieldset><button id="submit">Submit Quiz</button><button id="next">Next</button>'}
+function render(n){page.innerHTML=markup(n);page.querySelectorAll('button').forEach(btn=>btn.onclick=()=>clicked++)}
+render(1);
+function key(win,type,key='p',code='KeyP',ctrlKey=true,altKey=true){win.document.dispatchEvent(new win.KeyboardEvent(type,{key,code,ctrlKey,altKey,bubbles:true,cancelable:true}))}
+const press=(win=window)=>key(win,'keydown'),release=(win=window)=>key(win,'keyup');
+const respond=(reply={ok:true,letters:['B'],confidence:1,reason:'local stub'})=>pending.shift()(reply);
+const pick=()=>page.querySelector('.__mcq_pick');
+const visible=el=>!!el&&el.ownerDocument.defaultView.getComputedStyle(el).outlineStyle==='solid';
+const hiddenPanel=()=>!document.getElementById('__mcq_panel_host')||getComputedStyle(document.getElementById('__mcq_panel_host')).display==='none';
+</script><script src="../content/detector.js"></script><script src="../content/solver.js"></script><script>
+(async()=>{
+ const checks=[],check=(name,ok)=>checks.push([name,!!ok]);
+ try{
+  await sleep(20);const initialSessions=sessions.length;
+  check('载入后不弹出窗口、不调用模型',hiddenPanel()&&requests.length===0);
+  key(window,'keydown','p','KeyP',false,false);release();await sleep(20);
+  check('不完整快捷键不会启动',requests.length===0);
+  press();await sleep(20);
+  check('无需打开插件或开始即可发出求解请求',requests.length===1&&pending.length===1);
+  check('快捷键启动时仍无悬浮窗口',hiddenPanel());
+  check('保存模式为submit也不启动自动选中或提交',settings.mode==='submit'&&!__MCQ_DEBUG__.state.running&&clicked===0);
+  check('快捷键不创建或修改自动续跑会话',sessions.length===initialSessions);
+  release();respond();await sleep(20);
+  check('松开后回复仍保留答案但不显示',!!pick()&&!visible(pick()));
+  check('生成答案后仍不弹窗、不勾选、不提交',hiddenPanel()&&!page.querySelector('input:checked')&&clicked===0);
+  press();await sleep(20);check('再次按住立即显示且不重复请求',visible(pick())&&requests.length===1);
+  key(window,'keydown','P','KeyP');await sleep(20);check('长按不重复求解',requests.length===1);release();
+  render(2);press();await sleep(20);check('同页加载新题后快捷键重新识别',requests.length===2&&requests[1].stem.includes('Question 2'));
+  respond();await sleep(20);check('按住时新回复直接显示高亮',visible(pick()));release();
+  render(2);press();await sleep(20);check('DOM重建但同一题时重新标记且复用答案',visible(pick())&&requests.length===2);release();
+  contexts[0].listeners[0]({type:'MCQ_SCAN'},{},()=>{});await sleep(20);
+  check('手动扫描可恢复窗口',!hiddenPanel());
+  press();await sleep(20);check('已有窗口被快捷键隐藏且不重新弹出',hiddenPanel());release();
+  render(3);press();await sleep(20);const old=page.querySelector('fieldset');render(4);respond();await sleep(20);
+  check('请求途中换题不会把旧答案标记到新题',!pick()&&!old.querySelector('.__mcq_pick'));
+  release();press();await sleep(20);respond({ok:true,letters:['Z'],confidence:1});await sleep(20);
+  check('无效选项不高亮、不产生自动重试循环',!pick()&&pending.length===0&&hiddenPanel());release();
+  press();await sleep(20);respond();await sleep(20);check('失败后再次按住可重试并显示',visible(pick()));release();
+  render(5);press();await sleep(20);key(window,'keydown','Escape','Escape');respond();await sleep(20);
+  check('Esc阻止未完成请求回写答案',!pick()&&hiddenPanel());release();
+  render(51);const beforePending=requests.length;press();await sleep(20);render(52);release();press();await sleep(20);
+  check('旧请求未结束时换题按快捷键不会重复旧请求',requests.length===beforePending+1&&pending.length===1);
+  respond();await sleep(20);
+  check('旧请求结束后自动处理已要求的新题',requests.length===beforePending+2&&pending.length===1&&requests.at(-1).stem.includes('Question 52'));
+  respond();await sleep(20);check('只把新答案高亮到当前新题',visible(pick()));release();
+  settings.apiKey='';press();await sleep(20);
+  check('缺少API Key不请求且窗口保持隐藏',pending.length===0&&hiddenPanel()&&__MCQ_DEBUG__.highlightStatus.error.includes('API Key'));release();settings.apiKey='fake';
+  render(6);page.querySelectorAll('input').forEach(input=>input.disabled=true);const beforeReadonly=requests.length;press();await sleep(20);
+  check('只读或禁用题目不会请求或修改',requests.length===beforeReadonly&&!pick());release();
+  render(7);
+  const frame=document.createElement('iframe'),loaded=new Promise(resolve=>frame.onload=resolve);
+  const css=new URL('../content/overlay.css',location.href).href,detector=new URL('../content/detector.js',location.href).href,solver=new URL('../content/solver.js',location.href).href;
+  frame.srcdoc='<link rel="stylesheet" href="'+css+'">'+markup('frame')+'<scr'+'ipt>window.chrome=parent.testChrome(window)</scr'+'ipt><scr'+'ipt src="'+detector+'"></scr'+'ipt><scr'+'ipt src="'+solver+'"></scr'+'ipt>';
+  document.body.appendChild(frame);await loaded;const beforeFrame=requests.length;
+  press();await sleep(20);check('顶层快捷键同时启动iframe里的题目',requests.length===beforeFrame+2&&pending.length===2);
+  respond();respond();await sleep(20);
+  const child=frame.contentWindow,childPick=child.document.querySelector('.__mcq_pick');
+  check('顶层和iframe均显示答案且没有窗口',visible(pick())&&visible(childPick)&&hiddenPanel()&&!child.document.getElementById('__mcq_panel_host'));
+  release();check('松开后顶层和iframe都隐藏',!visible(pick())&&!visible(childPick));
+  press(child);await sleep(20);check('iframe内快捷键也启动同步显示并复用答案',visible(pick())&&visible(childPick)&&requests.length===beforeFrame+2);release(child);
+  check('全程快捷键没有勾选、填写或点击按钮',clicked===0&&!page.querySelector('input:checked')&&!child.document.querySelector('input:checked'));
+  page.innerHTML='<div class="question numerical_question"><div class="question_text">How many hours should be worked? Enter a number.</div><div class="answers"><input class="question_input" type="text" value=""></div></div>';
+  press();await sleep(20);check('数字题也可由快捷键直接启动',requests.at(-1).type==='numeric'&&pending.length===1);
+  respond({ok:true,value:'4',confidence:1});await sleep(20);
+  check('数字题快捷键仅高亮输入框而不填写数值',visible(pick())&&page.querySelector('input').value===''&&hiddenPanel());release();
+ }catch(error){check('无测试异常: '+error.stack,false)}
+ document.getElementById('verdict').innerHTML=checks.map(([name,ok])=>'<div class="'+(ok?'pass':'fail')+'">'+(ok?'PASS':'FAIL')+' — '+name+'</div>').join('');
+ document.getElementById('out').textContent=JSON.stringify({checks,requests:requests.length,pending:pending.length,sessions,clicked},null,2);window.__TEST_DONE__=true;
+})();
+</script></html>

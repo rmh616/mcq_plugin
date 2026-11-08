@@ -1,0 +1,52 @@
+<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>Sage In Review Chapter Quiz navigation</title>
+<style>body{font:14px/1.5 sans-serif;margin:24px}a{display:inline-block;padding:10px}label{display:block}.pass{color:green}.fail{color:red}</style>
+<div id="verdict">运行中…</div><pre id="out"></pre><div id="page"></div>
+<script>
+const messages=[],listeners=[],clicks={quiz:0,activity:0,previous:0,skip:0,sidebar:0,header:0};let savedBeforeClick=false,fixture;
+window.chrome={runtime:{onMessage:{addListener:fn=>listeners.push(fn)},sendMessage(msg,cb){messages.push(msg.type);const reply=msg.type==='MCQ_SESSION_GET'?{session:null}:{ok:true};if(cb)cb(reply);return Promise.resolve(reply)}},storage:{local:{get:async()=>({mcqSettings:{}})}}};
+const page=document.getElementById('page'),sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));
+function render(){
+ page.innerHTML=fixture;
+ for(const el of page.querySelectorAll('a')){
+  const role=el.id==='next-page'?'quiz':el.closest('.reading-activity')?'activity':el.closest('#top-skip-links')?'skip':el.closest('header')?'header':el.getAttribute('aria-label')?.includes('Previous')?'previous':'sidebar';
+  el.dataset.role=role;el.href=role==='quiz'||role==='sidebar'?'#chapter-quiz':'#'+role;
+  el.onclick=event=>{event.preventDefault();clicks[role]++;if(role==='quiz')savedBeforeClick=messages.includes('MCQ_SESSION_PROGRESS')};
+ }
+}
+window.addEventListener('hashchange',()=>{
+ if(location.hash==='#chapter-quiz')page.innerHTML='<main class="question"><div class="stem">Which choice proves that Chapter Quiz opened?</div><label><input type="radio" name="q">It returned to reading</label><label><input type="radio" name="q">The quiz is open</label><label><input type="radio" name="q">It replayed an activity</label></main>';
+});
+</script><script src="../content/detector.js"></script><script src="../content/solver.js"></script><script>
+(async()=>{
+ const checks=[],check=(name,ok)=>checks.push([name,!!ok]),debug=__MCQ_DEBUG__;
+ try{
+  fixture=await(await fetch('./sage-chapter-quiz-fixture.html')).text();render();
+  check('附件夹具包含两个活动及真正章节测验入口',page.querySelectorAll('.reading-activity a').length===2&&page.querySelector('#next-page').textContent==='Next: Chapter Quiz');
+  check('正文按钮优先于上一节Knowledge Check和侧栏',debug.findAdvanceButton(null).el.id==='next-page');
+  check('后续推进也能识别Chapter Quiz',debug.findAdvanceButton(null,{excludeChrome:true}).el.id==='next-page');
+  page.querySelector('.next-page').style.marginTop='6000px';
+  check('按钮远在页面底部仍优先选择',debug.findAdvanceButton(null).el.id==='next-page');
+  render();page.querySelector('.next-page').remove();
+  check('正文按钮缺失时可用侧栏Chapter 7 Quiz兜底',debug.findAdvanceButton(null,{excludeChrome:true}).el.dataset.role==='sidebar');
+  page.querySelector('a[data-role=sidebar]').remove();
+  check('仅剩上一节和活动时停止，而非倒退重做',debug.findAdvanceButton(null)===null);
+  check('排除导航方向只写在aria-label的上一节',page.querySelector('[data-role=previous]').textContent==='Knowledge Check 7.4'&&debug.findAdvanceButton(null,{excludeChrome:true})===null);
+  render();for(const el of page.querySelectorAll('a:not([data-role=activity])'))el.remove();
+  check('Do The Activity永远不是自动推进候选',debug.findAdvanceButton(null)===null);
+  page.querySelector('[data-role=activity]').textContent='Next';
+  check('即使文字变成Next，活动aria-label仍阻止误点',debug.findAdvanceButton(null)===null);
+  render();page.insertAdjacentHTML('afterbegin','<div id="activeQuestion"><p>Question awaiting submission?</p><button id="localSubmit">Submit</button></div>');
+  check('作答过程中本题Submit优先于章末测验入口',debug.findAdvanceButton(document.getElementById('activeQuestion')).el.id==='localSubmit');
+  render();debug.state.running=true;debug.state.settings.pageTimeout=3000;
+  const result=await debug.advance(null);debug.state.running=false;
+  check('点击被拦截时按正确href兜底到Chapter Quiz',result.ok&&result.questions?.length===1&&location.hash==='#chapter-quiz');
+  check('只点击一次正文Next Chapter Quiz',clicks.quiz===1);
+  check('整个流程从未进入任何Do The Activity',clicks.activity===0);
+  check('整个流程未点上一节、跳转辅助链接或侧栏',clicks.previous===0&&clicks.skip===0&&clicks.sidebar===0&&clicks.header===0);
+  check('点击前保存续跑状态',savedBeforeClick);
+  check('无超时也无重复活动循环',debug.state.stats.timeouts===0&&clicks.quiz===1&&clicks.activity===0);
+ }catch(error){check('无测试异常: '+error.stack,false)}
+ document.getElementById('verdict').innerHTML=checks.map(([name,ok])=>'<div class="'+(ok?'pass':'fail')+'">'+(ok?'PASS':'FAIL')+' — '+name+'</div>').join('');
+ document.getElementById('out').textContent=JSON.stringify({checks,clicks,savedBeforeClick,messages},null,2);window.__TEST_DONE__=true;
+})();
+</script></html>

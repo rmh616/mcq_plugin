@@ -1,0 +1,91 @@
+<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>Sage matching dropdown compatibility</title>
+<link rel="stylesheet" href="../content/overlay.css">
+<style>body{font:14px/1.5 sans-serif;margin:24px}.choice{margin:12px}.pass{color:green}.fail{color:red}select{min-width:150px}</style>
+<div id="verdict">运行中…</div><pre id="out"></pre><div id="page"></div>
+<script>
+const listeners=[],requests=[],events=[],settings={apiKey:'fake',mode:'highlight',actionDelay:0,submitDelay:0,pageTimeout:1000,concurrency:2};
+let submits=0,replyMode='normal';
+const targets=['innovation','improvement','invention','irrelevant'];
+const rowDescriptions=['high in novelty, high in value','low in novelty, high in value','high in novelty, low in value','low in novelty, low in value'];
+window.chrome={storage:{local:{get:async()=>({mcqSettings:settings})}},runtime:{onMessage:{addListener:fn=>listeners.push(fn)},sendMessage(msg,cb){
+ let reply={ok:true};
+ if(msg.type==='MCQ_SESSION_GET')reply={session:null};
+ if(msg.type==='MCQ_SOLVE'){
+  requests.push(msg.payload);const index=rowDescriptions.findIndex(description=>msg.payload.stem.endsWith(description));
+  const answer=msg.payload.options.find(option=>option.text===targets[index]);
+  reply={ok:true,letters:replyMode==='multiple'?['A','B']:[answer?.letter||'Z'],confidence:1,reason:'local matching stub'};
+ }
+ if(msg.type==='MAS_HIGHLIGHTS_SET')for(const fn of listeners)fn({type:'MAS_HIGHLIGHTS',payload:msg.payload},{},()=>{});
+ if(cb)cb(reply);return Promise.resolve(reply);
+}}};
+const send=type=>new Promise(resolve=>listeners[0]({type},{},resolve));
+const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));
+async function run(){await send('MCQ_START');await sleep(20);for(let n=0;n<100&&__MCQ_DEBUG__.state.running;n++)await sleep(50)}
+const page=document.getElementById('page');let fixture;
+function render(){
+ page.innerHTML='<form id="matching_form">'+fixture+'<button type="submit" class="btn-disabled">Submit</button></form><select id="theme"><option>Light</option><option>Dark</option></select>';
+ page.querySelector('form').onsubmit=event=>{event.preventDefault();submits++;page.querySelectorAll('select.vantage-answer-select').forEach(select=>select.disabled=true)};
+ for(const select of page.querySelectorAll('.vantage-answer-select')){
+  select.addEventListener('input',()=>events.push([select.id,'input']));
+  select.addEventListener('change',()=>{events.push([select.id,'change']);if([...page.querySelectorAll('.vantage-answer-select')].every(el=>el.value!=='0'))page.querySelector('button').classList.remove('btn-disabled')});
+ }
+}
+const selects=()=>[...page.querySelectorAll('.vantage-answer-select')];
+const key=type=>document.dispatchEvent(new KeyboardEvent(type,{key:'p',code:'KeyP',ctrlKey:true,altKey:true,bubbles:true,cancelable:true}));
+const shown=el=>getComputedStyle(el).display!=='none';
+</script><script src="../content/detector.js"></script><script src="../content/solver.js"></script><script>
+(async()=>{
+ const checks=[],check=(name,ok)=>checks.push([name,!!ok]),D=__MCQ_DETECTOR__;
+ try{
+  fixture=await(await fetch('./sage-matching-fixture.html')).text();render();
+  let qs=D.collect();
+  check('实际附件四行都识别为独立配对项',qs.length===4&&qs.every(q=>q.kind==='matching'&&q.answerSelect));
+  check('共同指令和每行描述分别完整保留',qs.every((q,i)=>q.stem==='Match the description with the idea category.\nDescription: '+rowDescriptions[i]));
+  check('每行恰好四个类别且不含Select option',qs.every(q=>q.options.map(o=>o.text).join('|')==='invention|irrelevant|innovation|improvement'));
+  check('四个子题hash独立，普通主题下拉框未误报',new Set(qs.map(q=>q.hash)).size===4&&qs.every(q=>q.answerSelect.id!=='theme'));
+  check('保留各行各自的真实选项值',qs[0].options[2].value==='1362317637'&&qs[1].options[2].value==='1362317641');
+  const oldHashes=qs.map(q=>q.hash);selects()[0].value='1362317637';
+  check('选择状态不会改变题干和hash',D.collect().every((q,i)=>q.hash===oldHashes[i]));selects()[0].value='0';
+  const scan=await send('MCQ_SCAN');const shadow=document.getElementById('__mcq_panel_host').shadowRoot;
+  check('扫描面板显示四个配对项及完整候选',scan.count===4&&shadow.getElementById('meta').textContent.includes('4 个配对项')&&shadow.querySelectorAll('.pick').length===4&&[...shadow.querySelectorAll('.pick')].every(el=>el.textContent==='配对'));
+  check('扫描只标记下拉框，不修改值',selects().every(el=>el.value==='0'&&el.classList.contains('__mcq_scan')));
+  await run();
+  check('仅高亮模式按行求解四次',requests.length===4&&__MCQ_DEBUG__.state.stats.answered===4);
+  check('模型收到行描述和纯文本类别，不含Select option或站点ID',requests.every(q=>q.type==='single'&&q.options.length===4&&!JSON.stringify(q).includes('Select option')&&!JSON.stringify(q).includes('1362317')));
+  check('模型答案对应每行建议文字',selects().every((el,i)=>el.nextElementSibling.textContent==='建议：'+targets[i]));
+  check('仅高亮不改变选项，不提交',selects().every(el=>el.value==='0')&&submits===0);
+  check('默认隐藏所有配对建议文字',[...page.querySelectorAll('.__mas_select_hint')].every(el=>!shown(el)));
+  key('keydown');await sleep(30);
+  check('快捷键显示每行文字和绿色框',selects().every(el=>getComputedStyle(el).outlineStyle==='solid')&&[...page.querySelectorAll('.__mas_select_hint')].every(shown));
+  key('keyup');check('松键时建议文字和框立即隐藏',selects().every(el=>getComputedStyle(el).outlineStyle!=='solid')&&[...page.querySelectorAll('.__mas_select_hint')].every(el=>!shown(el)));
+  check('反复显示复用结果，不重复添加提示或请求',requests.length===4&&page.querySelectorAll('.__mas_select_hint').length===4);
+  render();await send('MCQ_RESET');const beforeShortcut=requests.length;key('keydown');await sleep(50);
+  check('无需开始按钮即可直接求解配对题',requests.length===beforeShortcut+4&&page.querySelectorAll('.__mas_select_hint').length===4);
+  check('快捷键不改变下拉框值且窗口隐藏',selects().every(el=>el.value==='0')&&getComputedStyle(document.getElementById('__mcq_panel_host')).display==='none');key('keyup');
+  render();settings.mode='select';events.length=0;let intercepted=0;const first=selects()[0],native=Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype,'value');
+  Object.defineProperty(first,'value',{get(){return native.get.call(this)},set(v){intercepted++;native.set.call(this,v)}});
+  await run();
+  check('自动选中使用每行正确的真实value',selects().every((el,i)=>el.selectedOptions[0].textContent===targets[i]));
+  check('通过原生setter适配受控组件',intercepted===0);
+  check('每个下拉框均触发input和change',selects().every(el=>events.some(([id,type])=>id===el.id&&type==='input')&&events.some(([id,type])=>id===el.id&&type==='change')));
+  check('全部选择后站点Submit解除软禁用',!page.querySelector('button').classList.contains('btn-disabled')&&submits===0);
+  render();settings.mode='submit';await run();
+  check('四行全部填写后仅提交一次',submits===1&&selects().every(el=>el.disabled));
+  check('配对题提交后正常结束且无超时',!__MCQ_DEBUG__.state.running&&__MCQ_DEBUG__.state.stats.timeouts===0);
+  const beforeReadonly=requests.length;await run();
+  check('只读配对页仅供扫描，不重复作答',D.collect().length===0&&D.collect(document,{includeReadOnly:true}).length===4&&requests.length===beforeReadonly);
+  render();replyMode='multiple';await run();
+  check('单个配对项返回多个选项时不填写不提交',submits===1&&selects().every(el=>el.value==='0')&&__MCQ_DEBUG__.state.stats.failed===4);replyMode='normal';
+  render();page.querySelector('label').remove();await run();
+  check('描述缺失时标记不完整并阻止整题提交',D.collect()[0].incomplete&&submits===1);
+  render();selects()[0].options[2].value=selects()[0].options[1].value;
+  check('选项值重复时明确标记不完整',D.collect()[0].incomplete);
+  render();selects()[0].addEventListener('change',()=>selects()[0].value='0');await run();
+  check('站点拒绝选中时校验失败且不会提交',submits===1&&selects()[0].value==='0');
+  render();selects()[0].options[1].value='0';selects()[0].options[1].textContent='Zero category';selects()[0].options[1].setAttribute('data-answertext','Zero category');
+  check('真实value为0的类别不被当成占位符',D.collect()[0].options.some(o=>o.value==='0'&&o.text==='Zero category'));
+ }catch(error){check('无测试异常: '+error.stack,false)}
+ document.getElementById('verdict').innerHTML=checks.map(([name,ok])=>'<div class="'+(ok?'pass':'fail')+'">'+(ok?'PASS':'FAIL')+' — '+name+'</div>').join('');
+ document.getElementById('out').textContent=JSON.stringify({checks,apiCalls:requests.length,submits,events},null,2);window.__TEST_DONE__=true;
+})();
+</script></html>

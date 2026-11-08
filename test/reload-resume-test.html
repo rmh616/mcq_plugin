@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <title>整页刷新自动续跑测试</title>
+    <style>
+      body { font: 14px/1.6 -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif; margin: 24px; }
+      iframe { width: 820px; max-width: 100%; height: 330px; border: 1px solid #cbd5e1; border-radius: 8px; }
+      .pass { color: #15803d; font-weight: 600; }
+      .fail { color: #b91c1c; font-weight: 600; }
+      pre { padding: 12px; background: #0f172a; color: #e2e8f0; border-radius: 6px; overflow: auto; }
+    </style>
+  </head>
+  <body>
+    <h1>整页刷新自动续跑测试</h1>
+    <p>每次 Submit 和 Next 都销毁 iframe 文档并重新加载，用来模拟真实的整页导航。</p>
+    <iframe id="page"></iframe>
+    <h2>结果</h2>
+    <div id="verdict">运行中…</div>
+    <pre id="out"></pre>
+
+    <script>
+      window.__PHASE__ = 'q1';
+      window.__SESSION__ = { active: false, done: [] };
+      window.__STATS__ = {
+        loads: 0,
+        activeResumes: 0,
+        apiCalls: 0,
+        progressWrites: 0,
+        sessionEnds: 0,
+        nextClicks: 0,
+        submissions: []
+      };
+
+      window.BANK = {
+        q1: { stem: 'What is 2 + 2?', options: ['3', '4', '5', '6'], answer: '4' },
+        q2: { stem: 'What is the capital of France?', options: ['Rome', 'Paris', 'Madrid', 'Berlin'], answer: 'Paris' }
+      };
+
+      window.__fakeSolve = (payload) => {
+        __STATS__.apiCalls++;
+        const q = Object.values(BANK).find((item) => payload.stem.includes(item.stem));
+        const option = q && payload.options.find((item) => item.text === q.answer);
+        return option
+          ? { ok: true, letters: [option.letter], confidence: 1, reason: 'stub' }
+          : { ok: false, error: '题目未匹配' };
+      };
+
+      window.__handleMessage = (msg) => {
+        if (msg.type === 'MCQ_SOLVE') return __fakeSolve(msg.payload);
+        if (msg.type === 'MCQ_SESSION_BEGIN') {
+          __SESSION__ = { active: true, done: [] };
+          return { ok: true, session: __SESSION__ };
+        }
+        if (msg.type === 'MCQ_SESSION_PROGRESS') {
+          __STATS__.progressWrites++;
+          const incoming = Array.isArray(msg.payload && msg.payload.done) ? msg.payload.done : [];
+          __SESSION__.active = true;
+          __SESSION__.done = msg.payload && msg.payload.replace
+            ? incoming.slice()
+            : [...new Set([...( __SESSION__.done || []), ...incoming])];
+          return { ok: true, session: __SESSION__ };
+        }
+        if (msg.type === 'MCQ_SESSION_GET') {
+          if (__SESSION__.active) __STATS__.activeResumes++;
+          return { ok: true, session: __SESSION__.active ? { ...__SESSION__, done: __SESSION__.done.slice() } : null };
+        }
+        if (msg.type === 'MCQ_SESSION_END') {
+          __STATS__.sessionEnds++;
+          __SESSION__.active = false;
+          return { ok: true, removed: true };
+        }
+        return { ok: true };
+      };
+
+      const CHILD = `<!DOCTYPE html>
+        <html><head><meta charset="utf-8"><style>
+          body{font:15px/1.5 sans-serif;padding:18px}.opt{display:block;padding:6px}
+          button{margin-top:12px;padding:7px 18px}.feedback{padding:8px;background:#dcfce7}
+        </style></head><body><main id="quiz"></main>
+        <script>
+          const phase = parent.__PHASE__;
+          const bank = parent.BANK;
+          const quiz = document.getElementById('quiz');
+          const listeners = [];
+
+          function questionMarkup(key, feedback) {
+            const q = bank[key];
+            const picked = feedback ? q.answer : '';
+            return '<div class="stem">' + q.stem + '</div>' +
+              q.options.map((text, i) => '<label class="opt"><input type="radio" name="' + key + '" value="' + text + '" ' +
+                (text === picked ? 'checked' : '') + '> ' + text + '</label>').join('') +
+              (feedback
+                ? '<div class="feedback">Correct</div><button id="next">Next</button>'
+                : '<button id="submit" disabled>Submit</button>');
+          }
+
+          if (phase === 'q1' || phase === 'q2') quiz.innerHTML = questionMarkup(phase, false);
+          else if (phase === 'feedback1') quiz.innerHTML = questionMarkup('q1', true);
+          else if (phase === 'feedback2') quiz.innerHTML = questionMarkup('q2', true);
+          else quiz.innerHTML = '<div id="finished">Finished</div>';
+
+          const submit = document.getElementById('submit');
+          if (submit) {
+            document.querySelectorAll('input[type=radio]').forEach((input) => input.addEventListener('change', () => submit.disabled = false));
+            submit.addEventListener('click', (event) => {
+              event.preventDefault();
+              const key = phase;
+              const picked = document.querySelector('input:checked');
+              parent.__STATS__.submissions.push({ key, picked: picked && picked.value, correct: !!picked && picked.value === bank[key].answer });
+              parent.__PHASE__ = key === 'q1' ? 'feedback1' : 'feedback2';
+              parent.__reloadFrame();
+            });
+          }
+
+          const next = document.getElementById('next');
+          if (next) next.addEventListener('click', () => {
+            parent.__STATS__.nextClicks++;
+            parent.__PHASE__ = phase === 'feedback1' ? 'q2' : 'finished';
+            parent.__reloadFrame();
+          });
+
+          const SETTINGS = {
+            apiKey: 'test-key', baseUrl: 'x', model: 'x', mode: 'submit',
+            actionDelay: 20, submitDelay: 20, pageTimeout: 1000,
+            maxRounds: 10, concurrency: 1, useCache: false, extraPrompt: ''
+          };
+          window.chrome = {
+            runtime: {
+              lastError: undefined,
+              sendMessage(msg, cb) {
+                const reply = parent.__handleMessage(msg);
+                if (typeof cb === 'function') setTimeout(() => cb(reply), 0);
+                return Promise.resolve(reply);
+              },
+              onMessage: { addListener(fn) { listeners.push(fn); } }
+            },
+            storage: { local: { get: () => Promise.resolve({ mcqSettings: SETTINGS }) } }
+          };
+        <\/script>
+        <script src="../content/detector.js?v=reload-resume"><\/script>
+        <script src="../content/solver.js?v=reload-resume"><\/script>
+        <script>
+          if (phase === 'q1' && !parent.__SESSION__.active) {
+            setTimeout(() => listeners.forEach((fn) => fn({ type: 'MCQ_START' }, {}, () => {})), 0);
+          }
+        <\/script></body></html>`;
+
+      window.__reloadFrame = () => {
+        __STATS__.loads++;
+        document.getElementById('page').srcdoc = CHILD.replace('reload-resume', 'reload-resume-' + __STATS__.loads);
+      };
+      __reloadFrame();
+
+      (async () => {
+        const started = performance.now();
+        while ((__PHASE__ !== 'finished' || __SESSION__.active) && performance.now() - started < 15000) {
+          await new Promise((resolve) => setTimeout(resolve, 100));
+        }
+        const checks = [
+          ['两道题都只提交一次', __STATS__.submissions.length === 2],
+          ['两道题都答对', __STATS__.submissions.length === 2 && __STATS__.submissions.every((item) => item.correct)],
+          ['刷新后没有重复调用模型', __STATS__.apiCalls === 2],
+          ['Submit 和 Next 触发了多次文档重建', __STATS__.loads >= 5],
+          ['两个反馈页的 Next 都被自动点击', __STATS__.nextClicks === 2],
+          ['完成题目 hash 在提交前写入会话', __STATS__.progressWrites >= 2 && __SESSION__.done.length === 2],
+          ['新页面检测到活动会话并恢复', __STATS__.activeResumes >= 3],
+          ['最终页面正常结束并清除会话', __PHASE__ === 'finished' && !__SESSION__.active && __STATS__.sessionEnds >= 1]
+        ];
+        document.getElementById('verdict').innerHTML = checks
+          .map(([name, ok]) => '<div class="' + (ok ? 'pass' : 'fail') + '">' + (ok ? 'PASS' : 'FAIL') + ' — ' + name + '</div>')
+          .join('');
+        document.getElementById('out').textContent = JSON.stringify({ phase: __PHASE__, session: __SESSION__, stats: __STATS__, checks }, null, 2);
+        window.__TEST_DONE__ = true;
+      })();
+    </script>
+  </body>
+</html>

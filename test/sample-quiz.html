@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <title>MCQ 测试页</title>
+    <style>
+      body { font: 15px/1.6 -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif; max-width: 720px; margin: 32px auto; padding: 0 16px; color: #0f172a; }
+      .q { padding: 16px; margin-bottom: 18px; border: 1px solid #e2e8f0; border-radius: 8px; }
+      .stem { font-weight: 600; margin-bottom: 10px; }
+      .opt { display: block; padding: 4px 0; }
+      .hidden-radio input { position: absolute; opacity: 0; width: 0; height: 0; }
+      .hidden-radio label { display: block; padding: 6px 10px; border: 1px solid #cbd5e1; border-radius: 6px; margin-bottom: 6px; cursor: pointer; }
+      ul.choices { list-style: none; padding: 0; }
+      ul.choices li { padding: 6px 10px; border: 1px solid #cbd5e1; border-radius: 6px; margin-bottom: 6px; cursor: pointer; }
+      [role="radio"] { padding: 6px 10px; border: 1px solid #cbd5e1; border-radius: 6px; margin-bottom: 6px; cursor: pointer; }
+      [role="radio"][aria-checked="true"] { background: #dbeafe; }
+      button { padding: 8px 18px; font: inherit; border-radius: 6px; border: 1px solid #2563eb; background: #2563eb; color: #fff; cursor: pointer; }
+      /* 一个「长得像选择题但不是」的干扰项 */
+      .toggle { margin: 20px 0; font-size: 13px; color: #64748b; }
+    </style>
+  </head>
+  <body>
+    <h1>选择题检测测试页</h1>
+
+    <!-- 1. 标准 radio + label[for] -->
+    <div class="q">
+      <div class="stem">1. 水的化学式是什么？</div>
+      <label class="opt"><input type="radio" name="q1" id="q1a" /> <span>CO2</span></label>
+      <label class="opt"><input type="radio" name="q1" id="q1b" /> <span>H2O</span></label>
+      <label class="opt"><input type="radio" name="q1" id="q1c" /> <span>NaCl</span></label>
+      <label class="opt"><input type="radio" name="q1" id="q1d" /> <span>O2</span></label>
+    </div>
+
+    <!-- 2. 视觉隐藏的 radio，只显示 label -->
+    <div class="q hidden-radio">
+      <div class="stem">2. Which of the following is a prime number?</div>
+      <input type="radio" name="q2" id="q2a" /><label for="q2a">A. 21</label>
+      <input type="radio" name="q2" id="q2b" /><label for="q2b">B. 27</label>
+      <input type="radio" name="q2" id="q2c" /><label for="q2c">C. 29</label>
+      <input type="radio" name="q2" id="q2d" /><label for="q2d">D. 33</label>
+    </div>
+
+    <!-- 3. 多选 checkbox -->
+    <div class="q">
+      <div class="stem">3. 以下哪些是编程语言？（多选）</div>
+      <div class="opts">
+        <label class="opt"><input type="checkbox" name="q3a" /> Python</label>
+        <label class="opt"><input type="checkbox" name="q3b" /> HTML</label>
+        <label class="opt"><input type="checkbox" name="q3c" /> Rust</label>
+        <label class="opt"><input type="checkbox" name="q3d" /> JSON</label>
+      </div>
+    </div>
+
+    <!-- 4. ARIA radiogroup，没有原生 input -->
+    <div class="q">
+      <div class="stem">4. 《百年孤独》的作者是谁？</div>
+      <div role="radiogroup" aria-label="q4">
+        <div role="radio" aria-checked="false" tabindex="0">博尔赫斯</div>
+        <div role="radio" aria-checked="false" tabindex="0">马尔克斯</div>
+        <div role="radio" aria-checked="false" tabindex="0">略萨</div>
+        <div role="radio" aria-checked="false" tabindex="0">科塔萨尔</div>
+      </div>
+    </div>
+
+    <!-- 5. 纯 li，靠 A. B. C. 前缀识别 -->
+    <div class="q">
+      <div class="stem">5. The capital of Australia is:</div>
+      <ul class="choices">
+        <li>A. Sydney</li>
+        <li>B. Melbourne</li>
+        <li>C. Canberra</li>
+        <li>D. Perth</li>
+      </ul>
+    </div>
+
+    <!-- 干扰项：不应该被识别成题目 -->
+    <div class="toggle">
+      <label><input type="radio" name="theme" checked /> 浅色</label>
+      <label><input type="radio" name="theme" /> 深色</label>
+    </div>
+
+    <button id="submit">提交</button>
+
+    <script>
+      // ARIA radio 的点击行为
+      document.querySelectorAll('[role="radio"]').forEach((el) => {
+        el.addEventListener('click', () => {
+          el.parentElement.querySelectorAll('[role="radio"]').forEach((s) => s.setAttribute('aria-checked', 'false'));
+          el.setAttribute('aria-checked', 'true');
+        });
+      });
+      document.querySelectorAll('ul.choices li').forEach((el) => {
+        el.addEventListener('click', () => {
+          el.parentElement.querySelectorAll('li').forEach((s) => (s.style.background = ''));
+          el.style.background = '#dbeafe';
+        });
+      });
+      document.getElementById('submit').addEventListener('click', () => alert('已提交（测试页不做任何事）'));
+    </script>
+  </body>
+</html>

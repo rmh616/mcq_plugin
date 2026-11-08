@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <title>Sage Vantage 真实结构回归测试</title>
+    <style>
+      body { font: 14px/1.6 -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif; margin: 24px; }
+      fieldset { max-width: 720px; padding: 18px; border: 1px solid #cbd5e1; }
+      .choice { padding: 8px 10px; margin: 6px 0; border: 1px solid #cbd5e1; border-radius: 6px; }
+      .choice label { display: block; cursor: pointer; }
+      .visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+      .btn-submit { margin-top: 12px; padding: 7px 18px; }
+      .btn-disabled { opacity: .45; cursor: not-allowed; }
+      .pass { color: #15803d; font-weight: 600; }
+      .fail { color: #b91c1c; font-weight: 600; }
+      pre { max-width: 900px; padding: 12px; background: #0f172a; color: #e2e8f0; border-radius: 6px; overflow: auto; }
+    </style>
+  </head>
+  <body>
+    <h1>Sage Vantage 真实结构回归测试</h1>
+    <p>复现附件里的题干、True/False 选项和 <code>btn-disabled</code> 提交按钮状态机。</p>
+    <main id="fixture"></main>
+    <h2>结果</h2>
+    <div id="verdict">运行中…</div>
+    <pre id="out"></pre>
+
+    <script>
+      const STEM = 'Individuals with growth mindsets become argumentative when presented with negative comments.';
+      let submitClicks = 0;
+
+      function sageQuestion(stem, name) {
+        return `
+          <form class="question js-disable-submit" onsubmit="return false">
+            <fieldset>
+              <div class="question-area" id="booleanType"><p>${stem}</p></div>
+              <legend class="visually-hidden">True/False Question</legend>
+              <div class="answer-area">
+                <div class="list" role="list" aria-labelledby="booleanType">
+                  <div class="choice" role="listitem" tabindex="0" aria-labelledby="answer-true" title="not checked">
+                    <label role="radio">
+                      <span class="jcf-radio jcf-unchecked"><input tabindex="-1" type="radio" value="true" name="${name}" style="position:absolute;opacity:0"><span></span></span>
+                      <span class="check-name" id="answer-true">True</span>
+                    </label>
+                  </div>
+                  <div class="choice" role="listitem" tabindex="0" aria-labelledby="answer-false" title="not checked">
+                    <label role="radio">
+                      <span class="jcf-radio jcf-unchecked"><input tabindex="-1" type="radio" value="false" name="${name}" style="position:absolute;opacity:0"><span></span></span>
+                      <span class="check-name" id="answer-false">False</span>
+                    </label>
+                  </div>
+                </div>
+              </div>
+              <div class="btn-box">
+                <button class="button btn-secondary btn-submit btn-disabled" name="submit" type="submit"
+                  onclick="return false" aria-label="Submit button disabled" aria-disabled="true">submit</button>
+              </div>
+            </fieldset>
+          </form>`;
+      }
+
+      function wireSageStateMachine() {
+        const form = document.querySelector('.question');
+        const submit = form.querySelector('.btn-submit');
+        form.querySelectorAll('input[type=radio]').forEach((input) => {
+          input.addEventListener('change', () => {
+            submit.classList.remove('btn-disabled');
+            submit.removeAttribute('onclick');
+            submit.removeAttribute('aria-label');
+            submit.removeAttribute('aria-disabled');
+          });
+        });
+        submit.addEventListener('click', (event) => {
+          event.preventDefault();
+          submitClicks++;
+          document.getElementById('fixture').innerHTML = sageQuestion('A newly loaded Sage question used to verify page advance.', 'answer2');
+        });
+      }
+
+      document.getElementById('fixture').innerHTML = sageQuestion(STEM, 'answer1');
+      wireSageStateMachine();
+
+      // solver.js 初始化所需的最小 Chrome API；本测试不发网络请求。
+      window.chrome = {
+        runtime: {
+          lastError: undefined,
+          sendMessage: () => Promise.resolve({ ok: true }),
+          onMessage: { addListener() {} }
+        },
+        storage: { local: { get: () => Promise.resolve({ mcqSettings: {} }) } }
+      };
+      document.write('<script src="../content/detector.js?v=' + Date.now() + '"><\/script>');
+      document.write('<script src="../content/solver.js?v=' + Date.now() + '"><\/script>');
+    </script>
+
+    <script>
+      (async () => {
+        const checks = [];
+        const check = (name, ok) => checks.push([name, !!ok]);
+        const q = window.__MCQ_DETECTOR__.collect()[0];
+        const debug = window.__MCQ_DEBUG__;
+        const initialButton = debug.findAdvanceButton(q && q.container);
+
+        check('真实 Sage 结构被识别为一道题', !!q);
+        check('题干来自 aria-labelledby 指向的 question-area', q && q.stem === STEM);
+        check('识别到 True / False 两个选项', q && q.options.length === 2 && q.options[0].text === 'True' && q.options[1].text === 'False');
+        check('点击目标是可见 label', q && q.options[1].clickTarget.tagName === 'LABEL');
+        check('初始提交按钮可被定位', initialButton && initialButton.label.toLowerCase() === 'submit');
+        check('btn-disabled / aria-disabled 被视为禁用', initialButton && debug.isDisabled(initialButton.el));
+        check('没有原生 disabled 时不算硬禁用', initialButton && !debug.isHardDisabled(initialButton.el));
+
+        q.options[1].clickTarget.click();
+        await new Promise((resolve) => setTimeout(resolve, 30));
+        const input = q.options[1].input;
+        const unlockedButton = debug.findAdvanceButton(q.container);
+        check('点击 label 后隐藏 radio 真的被选中', input && input.checked);
+        check('Sage change 事件移除了软禁用状态', unlockedButton && !debug.isDisabled(unlockedButton.el));
+        check('Sage change 事件移除了阻止提交的 onclick', unlockedButton && !unlockedButton.el.hasAttribute('onclick'));
+
+        debug.state.running = true;
+        const advanced = await debug.advance(q.container);
+        check('解锁后 solver 成功点击 Submit', submitClicks === 1);
+        check('点击后检测到新题并立刻推进', advanced && advanced.ok && advanced.questions.length === 1);
+        check('推进过程没有耗尽 pageTimeout', debug.state.stats.timeouts === 0);
+        debug.state.running = false;
+
+        document.getElementById('verdict').innerHTML = checks
+          .map(([name, ok]) => `<div class="${ok ? 'pass' : 'fail'}">${ok ? 'PASS' : 'FAIL'} — ${name}</div>`)
+          .join('');
+        document.getElementById('out').textContent = JSON.stringify({
+          passed: checks.filter((x) => x[1]).length,
+          total: checks.length,
+          submitClicks,
+          advance: advanced && { ok: advanced.ok, questions: advanced.questions && advanced.questions.length },
+          checks
+        }, null, 2);
+        window.__TEST_DONE__ = true;
+        window.__TEST_RESULT__ = { checks, submitClicks, advanced };
+      })();
+    </script>
+  </body>
+</html>

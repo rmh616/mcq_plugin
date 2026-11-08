@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<title>Canvas Classic compatibility</title>
+<style>
+body { font: 14px/1.5 sans-serif; margin: 24px; }
+.question { padding: 12px; border: 1px solid #ddd; margin: 12px; }
+label, .select_answer { display: block; }
+.pass { color: green; } .fail { color: red; }
+</style>
+<div id="verdict">运行中…</div><pre id="out"></pre><div id="page"></div>
+<script>
+const listeners = [], messages = [], requests = [];
+let submits = 0, navClicks = 0;
+const settings = { apiKey: 'fake', mode: 'select', actionDelay: 10, concurrency: 3, submitDelay: 10, pageTimeout: 1500 };
+window.chrome = {
+  runtime: {
+    onMessage: { addListener: (fn) => listeners.push(fn) },
+    sendMessage(msg, cb) {
+      messages.push(msg.type);
+      let reply = { ok: true };
+      if (msg.type === 'MCQ_SOLVE') {
+        requests.push(msg.payload);
+        reply = { ok: true, letters: [msg.payload.type === 'multi' ? 'A' : 'D'], confidence: 1, reason: 'local fixture' };
+      }
+      if (cb) cb(reply);
+      return Promise.resolve(reply);
+    }
+  },
+  storage: { local: { get: async () => ({ mcqSettings: settings }) } }
+};
+const send = (type) => new Promise(resolve => listeners[0]({ type }, {}, resolve));
+const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+async function settle() {
+  await sleep(20);
+  for (let n = 0; n < 100 && window.__MCQ_DEBUG__.state.running; n++) await sleep(100);
+}
+</script>
+<script src="../content/detector.js"></script><script src="../content/solver.js"></script>
+<script>
+(async () => {
+  const checks = [], check = (name, ok) => checks.push([name, !!ok]);
+  const page = document.getElementById('page'), D = window.__MCQ_DETECTOR__, debug = window.__MCQ_DEBUG__;
+  try {
+    const fixture = await (await fetch('./canvas-fixture.html')).text();
+    page.innerHTML = fixture;
+    const review = D.collect(document, { includeReadOnly: true });
+    const originalChecked = [...page.querySelectorAll('input')].map(el => el.checked);
+    check('附件17道题全部可供扫描', review.length === 17);
+    check('结果页保持只读且不进入待答列表', review.every(q => q.readOnly) && debug.pendingQuestions().length === 0);
+    check('题干只含问题而非分数或选项清单', review.every(q => q.stem.length > 8 && !/Correct answer|Wrong answer|\bA\.\s/.test(q.stem)));
+    check('68个字母选项均映射为完整文字', review.length === 17 && review.every(q => q.options.length === 4 && q.options.every(o => o.text.length > 1)));
+    check('题目hash独立', new Set(review.map(q => q.hash)).size === 17);
+    check('第一题文字与附件一致', review[0].stem.includes('Economics is a social science concerned with:') && review[0].options[0].text === 'the best use of scarce resources to achieve the maximum satisfaction of economic wants.');
+    const scanned = await send('MCQ_SCAN');
+    check('扫描界面返回17题', scanned.count === 17);
+    const rows = [...document.getElementById('__mcq_panel_host').shadowRoot.querySelectorAll('.row')];
+    check('扫描面板显示每题完整题干和题号', rows.length === 17 && rows.every((row, i) => row.querySelector('.q').textContent === review[i].stem));
+    const longQuestion = rows[10].querySelector('.q');
+    check('第11题长题干没有尾部截断或两行裁切', review[10].stem.length > 140 && /^11\./.test(longQuestion.textContent) && getComputedStyle(longQuestion).webkitLineClamp === 'none');
+    check('扫描面板显示68个完整选项', rows.every((row, i) => row.querySelector('.why').textContent === review[i].options.map(o => o.letter + '. ' + o.text).join('\n')));
+    await send('MCQ_START'); await settle();
+    check('结果页点击开始不会调用模型或导航', requests.length === 0 && !debug.state.running && !messages.includes('MCQ_SESSION_BEGIN'));
+    check('原始禁用和选中状态保持一致', [...page.querySelectorAll('input')].every((el, i) => el.disabled && el.checked === originalChecked[i]));
+
+    // 仅在本地测试副本中变成可编辑题，模拟尚未提交的 Classic Quiz。
+    page.querySelectorAll('input').forEach(el => { el.disabled = false; el.removeAttribute('aria-disabled'); el.checked = false; });
+    const active = D.collect();
+    check('可编辑页面识别为17道单选题', active.length === 17 && active.every(q => !q.readOnly && q.type === 'single'));
+    check('提交前后题目hash相同', active.every((q, i) => q.hash === review[i].hash));
+    await send('MCQ_START'); await settle();
+    check('批处理模型收到17份完整题目', requests.length === 17 && requests.every(p => p.options.every(o => o.text.length > 1)));
+    check('模型请求与第10至17题完整扫描内容一致', review.slice(9).every(q => {
+      const payload = requests.find(p => p.hash === q.hash);
+      return payload && payload.stem === q.stem && payload.options.every((o, i) => o.text === q.options[i].text);
+    }));
+    check('自动选择只选中每题目标选项D', [...page.querySelectorAll('.question')].every(q => {
+      const inputs = [...q.querySelectorAll('input')];
+      return inputs.filter(el => el.checked).length === 1 && inputs[3].checked;
+    }));
+
+    page.innerHTML = '<nav><button id="module-next">Next</button></nav><form id="quiz_form"><div class="question multiple_answers_question" id="question_multi"><div class="question_text">Select all applicable items.</div><div class="answers"><label><input type="checkbox">Item one</label><label><input type="checkbox">Item two</label><label><input type="checkbox">Item three</label></div></div><button type="submit" id="submit_quiz">Submit Quiz</button></form>';
+    document.getElementById('module-next').onclick = () => navClicks++;
+    document.getElementById('quiz_form').onsubmit = event => { event.preventDefault(); submits++; page.innerHTML = fixture; };
+    check('Canvas多选结构被识别', D.collect().length === 1 && D.collect()[0].type === 'multi');
+    check('识别最终Submit Quiz并排除模块Next', debug.findAdvanceButton(null).el.id === 'submit_quiz');
+    settings.mode = 'submit';
+    await send('MCQ_START'); await settle();
+    check('多选题仅提交一次且模块Next未点击', submits === 1 && navClicks === 0 && !debug.state.running);
+    check('提交后结果页停止且不再调用模型', requests.length === 18 && debug.pendingQuestions().length === 0);
+  } catch (error) { check('测试无异常: ' + error.message, false); }
+  document.getElementById('verdict').innerHTML = checks.map(([name, ok]) => '<div class="' + (ok ? 'pass' : 'fail') + '">' + (ok ? 'PASS' : 'FAIL') + ' — ' + name + '</div>').join('');
+  document.getElementById('out').textContent = JSON.stringify({checks, apiCalls: requests.length, submits, navClicks}, null, 2);
+  window.__TEST_DONE__ = true;
+})();
+</script>
+</html>

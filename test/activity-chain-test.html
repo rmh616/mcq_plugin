@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <title>Knowledge Check 活动入口推进测试</title>
+    <style>
+      body { font: 14px/1.6 -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif; margin: 24px; }
+      nav { padding: 10px; background: #f1f5f9; }
+      main { max-width: 760px; padding: 20px; }
+      a, button { display: inline-block; margin: 8px; padding: 8px 14px; }
+      label { display: block; padding: 5px; }
+      .pass { color: #15803d; font-weight: 600; }
+      .fail { color: #b91c1c; font-weight: 600; }
+      pre { padding: 12px; background: #0f172a; color: #e2e8f0; border-radius: 6px; }
+    </style>
+  </head>
+  <body>
+    <div id="page"></div>
+    <h2>结果</h2>
+    <div id="verdict">运行中…</div>
+    <pre id="out"></pre>
+
+    <script>
+      let nextClicks = 0;
+      let launchClicks = 0;
+      let navClicks = 0;
+      let wrapperClicks = 0;
+      let skipClicks = 0;
+
+      function renderContentEnd() {
+        document.getElementById('page').innerHTML = `
+          <div id="top-skip-links">
+            <a class="accessibility top-tab next-btn" href="#next-page" id="top-skip">Skip to - Next: Knowledge Check</a>
+          </div>
+          <nav><a href="#" id="context">Knowledge Check 3.4</a></nav>
+          <main>
+            <p>End of chapter reading content.</p>
+            <div class="next-knowledge-check" id="next-wrap">
+              <a href="#chapter-landing" target="_blank" id="next-page">Next: Knowledge Check</a>
+            </div>
+          </main>
+          <div id="bottom-skip-links">
+            <a class="accessibility bottom-tab next-btn" href="#next-page">Skip to - Next: Knowledge Check</a>
+          </div>`;
+        for (const el of document.querySelectorAll('#top-skip-links a, #bottom-skip-links a')) {
+          el.addEventListener('click', () => skipClicks++);
+        }
+        document.getElementById('context').onclick = (event) => { event.preventDefault(); navClicks++; };
+        document.getElementById('next-wrap').addEventListener('click', (event) => {
+          if (event.target === event.currentTarget) wrapperClicks++;
+        });
+        // 模拟 Sage：合成 click 被页面事件代理吞掉，href 本身仍是正确的导航目标。
+        document.getElementById('next-page').onclick = (event) => {
+          event.preventDefault();
+          nextClicks++;
+        };
+      }
+
+      window.addEventListener('hashchange', () => {
+        if (location.hash === '#chapter-landing') renderActivityLanding();
+      });
+
+      function renderActivityLanding() {
+        document.getElementById('page').innerHTML = `
+          <nav><a href="#" id="nav-kc">Knowledge Check 3.4</a></nav>
+          <main>
+            <h1>3.4 Working Across Cultures</h1>
+            <section class="activities">
+              <h2>Activities in this section</h2>
+              <a href="#knowledge-check" id="launch">Knowledge Check 3.4</a>
+            </section>
+          </main>`;
+        document.getElementById('nav-kc').onclick = (event) => { event.preventDefault(); navClicks++; };
+        document.getElementById('launch').onclick = (event) => {
+          event.preventDefault();
+          launchClicks++;
+          renderQuestion();
+        };
+      }
+
+      function renderQuestion() {
+        document.getElementById('page').innerHTML = `
+          <main class="question">
+            <div class="stem">Which option confirms that the activity opened?</div>
+            <label><input type="radio" name="q1"> It stayed on the chapter page</label>
+            <label><input type="radio" name="q1"> The question appeared</label>
+            <label><input type="radio" name="q1"> The navigation link was clicked</label>
+          </main>`;
+      }
+
+      renderContentEnd();
+
+      window.chrome = {
+        runtime: {
+          lastError: undefined,
+          sendMessage(message, callback) {
+            const response = { ok: true };
+            if (typeof callback === 'function') callback(response);
+            return Promise.resolve(response);
+          },
+          onMessage: { addListener() {} }
+        },
+        storage: { local: { get: () => Promise.resolve({ mcqSettings: {} }) } }
+      };
+      document.write('<script src="../content/detector.js?v=' + Date.now() + '"><\/script>');
+      document.write('<script src="../content/solver.js?v=' + Date.now() + '"><\/script>');
+    </script>
+
+    <script>
+      (async () => {
+        const debug = window.__MCQ_DEBUG__;
+        debug.state.running = true;
+        debug.state.settings.pageTimeout = 3000;
+        const result = await debug.advance(null);
+        debug.state.running = false;
+        const checks = [
+          ['先点击底部 Next: Knowledge Check', nextClicks === 1],
+          ['点击目标是真正的内部链接而不是外层 next 容器', wrapperClicks === 0],
+          ['没有误点同名的无障碍页内跳转链接', skipClicks === 0],
+          ['再点击章节页的 Knowledge Check 3.4', launchClicks === 1],
+          ['没有误点导航栏同名链接', navClicks === 0],
+          ['最终识别到新题目', result && result.ok && result.questions && result.questions.length === 1],
+          ['两步推进没有耗尽 pageTimeout', debug.state.stats.timeouts === 0]
+        ];
+        document.getElementById('verdict').innerHTML = checks
+          .map(([name, ok]) => `<div class="${ok ? 'pass' : 'fail'}">${ok ? 'PASS' : 'FAIL'} — ${name}</div>`)
+          .join('');
+        document.getElementById('out').textContent = JSON.stringify({ nextClicks, wrapperClicks, skipClicks, launchClicks, navClicks, result: result && result.ok, checks }, null, 2);
+        window.__TEST_DONE__ = true;
+      })();
+    </script>
+  </body>
+</html>

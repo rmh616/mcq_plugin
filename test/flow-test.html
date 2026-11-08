@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <title>一页一题 流程自测</title>
+    <style>
+      body { font: 14px/1.6 -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif; margin: 0 0 40px; }
+      nav { display: flex; gap: 14px; padding: 10px 24px; background: #1e293b; color: #cbd5e1; font-size: 13px; }
+      nav a { color: #93c5fd; cursor: pointer; }
+      main { max-width: 640px; margin: 24px auto; padding: 0 16px; }
+      #quiz { padding: 18px; border: 1px solid #e2e8f0; border-radius: 8px; min-height: 150px; }
+      .stem { font-weight: 600; margin-bottom: 12px; }
+      label.opt { display: block; padding: 5px 0; }
+      #submit, #cont { margin-top: 14px; padding: 8px 20px; font: inherit; border-radius: 6px;
+                       border: 1px solid #2563eb; background: #2563eb; color: #fff; cursor: pointer; }
+      #submit:disabled { background: #cbd5e1; border-color: #cbd5e1; cursor: not-allowed; }
+      footer { margin-top: 32px; padding: 12px 24px; background: #f1f5f9; font-size: 12px; }
+      .pass { color: #15803d; font-weight: 600; }
+      .fail { color: #b91c1c; font-weight: 600; }
+      pre { background: #0f172a; color: #e2e8f0; padding: 12px; border-radius: 6px; font-size: 12px; overflow: auto; }
+    </style>
+  </head>
+  <body>
+    <!-- 干扰项：页首有 Next / 页尾有 Continue shopping、Submit feedback -->
+    <nav><a>Previous</a><a id="navNext" role="button">Next</a><a>Exit</a></nav>
+
+    <main>
+      <h1>一页一题 流程自测</h1>
+      <div id="quiz"></div>
+      <h2>结果</h2>
+      <div id="verdict">运行中…</div>
+      <pre id="out"></pre>
+    </main>
+
+    <footer>
+      <button>Continue shopping</button> · <button>Submit feedback</button>
+    </footer>
+
+    <script>
+      // ---------- 假的 quiz 引擎：提交 -> 对错反馈 -> 下一题 ----------
+      const BANK = [
+        { stem: '1. 2 + 2 等于多少？', opts: ['3', '4', '5', '6'], answer: '4' },
+        { stem: '2. What is the capital of Japan?', opts: ['Osaka', 'Kyoto', 'Tokyo', 'Nagoya'], answer: 'Tokyo' },
+        { stem: '3. 下列哪个是哺乳动物？', opts: ['鲨鱼', '鳄鱼', '海豚', '企鹅'], answer: '海豚' },
+        { stem: '4. Which gas do plants absorb?', opts: ['Oxygen', 'Carbon dioxide', 'Nitrogen', 'Helium'], answer: 'Carbon dioxide' }
+      ];
+      const submitted = [];
+      const timeline = [];
+      let idx = 0;
+      let phase = 'question';
+      let navNextClicks = 0;
+      let apiCalls = 0;
+      let t0 = performance.now();
+      let elapsed = null;
+      const T = () => Math.round(performance.now() - t0);
+      const mark = (ev) => timeline.push(T() + 'ms · ' + ev);
+
+      document.getElementById('navNext').onclick = () => navNextClicks++;
+      // 追踪每一次点击落在谁身上，方便定位「点错按钮」
+      document.addEventListener(
+        'click',
+        (e) => {
+          const t = e.target;
+          if (t.closest && t.closest('#__mcq_panel_host')) return;
+          mark('点击 <' + t.tagName.toLowerCase() + (t.id ? '#' + t.id : '') + '> "' + (t.innerText || t.value || '').slice(0, 18) + '"');
+        },
+        true
+      );
+      const quiz = document.getElementById('quiz');
+
+      function renderQuestion() {
+        const q = BANK[idx];
+        mark('渲染 Q' + (idx + 1));
+        quiz.innerHTML =
+          `<div class="stem">${q.stem}</div>` +
+          q.opts.map((o) => `<label class="opt"><input type="radio" name="item${idx}" value="${o}"> ${o}</label>`).join('') +
+          `<div><button id="submit" disabled>Submit</button></div>`;
+        const btn = quiz.querySelector('#submit');
+        quiz.querySelectorAll('input[type=radio]').forEach((r) =>
+          r.addEventListener('change', () => {
+            btn.disabled = false;
+            mark('选中 ' + r.value + '（提交按钮解锁）');
+          })
+        );
+        btn.addEventListener('click', () => {
+          const picked = quiz.querySelector('input[type=radio]:checked');
+          mark('提交 ' + (picked ? picked.value : '空'));
+          submitted.push({ picked: picked ? picked.value : null, correct: !!picked && picked.value === q.answer });
+          phase = 'feedback';
+          renderFeedback(!!picked && picked.value === q.answer);
+        });
+      }
+
+      function renderFeedback(right) {
+        // 中间反馈页：没有题目，只有一个 Continue
+        quiz.innerHTML = `<div class="stem">${right ? '✅ 回答正确' : '❌ 回答错误'}</div><div><button id="cont">Continue</button></div>`;
+        quiz.querySelector('#cont').addEventListener('click', () => {
+          mark('点了 Continue');
+          idx++;
+          if (idx >= BANK.length) {
+            phase = 'finished';
+            elapsed = T();
+            quiz.innerHTML = '<div class="stem">测验结束，感谢参与。</div>';
+            mark('结束');
+          } else {
+            phase = 'question';
+            quiz.innerHTML = '<div class="stem">加载中…</div>';
+            setTimeout(renderQuestion, 500); // 模拟网络延迟
+          }
+        });
+      }
+      renderQuestion();
+
+      // ---------- 假的 chrome API ----------
+      const SETTINGS = {
+        apiKey: 'test-key', baseUrl: 'x', model: 'x',
+        mode: 'submit',
+        actionDelay: 60, submitDelay: 60, pageTimeout: 8000,
+        maxRounds: 20, concurrency: 1, useCache: false, extraPrompt: ''
+      };
+      const listeners = [];
+
+      function fakeSolve(p) {
+        apiCalls++;
+        const q = BANK.find((b) => p.stem.indexOf(b.stem.slice(0, 12)) >= 0);
+        if (!q) return { ok: false, error: '题库没匹配上：' + p.stem.slice(0, 40) };
+        const opt = p.options.find((o) => o.text === q.answer);
+        if (!opt) return { ok: false, error: '选项对不上：' + JSON.stringify(p.options) };
+        mark('问模型 → ' + opt.letter);
+        return { ok: true, letters: [opt.letter], confidence: 0.95, reason: 'stub' };
+      }
+
+      window.chrome = {
+        runtime: {
+          lastError: undefined,
+          sendMessage(msg, cb) {
+            const reply = msg.type === 'MCQ_SOLVE' ? fakeSolve(msg.payload) : { ok: true };
+            if (typeof cb === 'function') setTimeout(() => cb(reply), 60); // 模拟网络往返
+            return Promise.resolve(reply);
+          },
+          onMessage: { addListener: (fn) => listeners.push(fn) }
+        },
+        storage: {
+          local: { get: () => Promise.resolve({ mcqSettings: SETTINGS }), set: () => Promise.resolve() }
+        }
+      };
+
+      document.write('<script src="../content/detector.js?v=' + Date.now() + '"><\/script>');
+      document.write('<script src="../content/solver.js?v=' + Date.now() + '"><\/script>');
+    </script>
+
+    <script>
+      (async () => {
+        const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+        t0 = performance.now();
+        timeline.length = 0;
+        listeners.forEach((fn) => fn({ type: 'MCQ_START' }, {}, () => {}));
+
+        const started = performance.now();
+        while (phase !== 'finished' && performance.now() - started < 60000) await sleep(200);
+        await sleep(400);
+
+        const perQ = elapsed ? Math.round(elapsed / BANK.length) : null;
+        // 后台标签页的定时器会被节流到 1Hz，墙钟时间没有参考价值，
+        // 所以用「有没有白等满 pageTimeout」来判断快速推进路径是否生效。
+        const timeouts = window.__MCQ_DEBUG__ ? window.__MCQ_DEBUG__.state.stats.timeouts : -1;
+        const checks = [
+          ['4 道题全部提交', submitted.length === 4],
+          ['4 道题全部答对', submitted.length === 4 && submitted.every((s) => s.correct)],
+          ['没有出现空提交', submitted.length > 0 && submitted.every((s) => s.picked !== null)],
+          ['只问了 4 次模型（没重复提问）', apiCalls === 4],
+          ['走到了结束页', phase === 'finished'],
+          ['没误点页首的 Next', navNextClicks === 0],
+          ['反馈页是立刻推进的，没有白等 pageTimeout', timeouts === 0]
+        ];
+        const result = { checks, elapsed, perQ, timeouts, apiCalls, navNextClicks, phase, submitted, timeline };
+
+        document.getElementById('verdict').innerHTML = checks
+          .map(([n, ok]) => `<div class="${ok ? 'pass' : 'fail'}">${ok ? 'PASS' : 'FAIL'} — ${n}</div>`)
+          .join('');
+        document.getElementById('out').textContent = JSON.stringify(
+          { elapsed, perQ, timeouts, apiCalls, navNextClicks, submitted, timeline },
+          null,
+          1
+        );
+        window.__TEST_DONE__ = true;
+        try {
+          parent.postMessage({ mcqFlowTest: result }, '*');
+        } catch (_) {}
+      })();
+    </script>
+  </body>
+</html>

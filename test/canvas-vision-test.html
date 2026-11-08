@@ -1,0 +1,98 @@
+<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>Canvas image and matching integration</title>
+<link rel="stylesheet" href="../content/overlay.css">
+<style>body{font:14px/1.5 sans-serif;margin:24px}.question{padding:16px;margin:16px;border:1px solid #ccc}.answer{padding:8px}label{display:inline-block;min-width:40px}select{min-width:200px}.pass{color:green}.fail{color:red}</style>
+<div id="verdict">Running</div><pre id="out"></pre><div id="page"></div>
+<script>
+const page=document.getElementById('page'),listeners=[],requests=[],settings={apiKey:'fake',mode:'select',actionDelay:0,submitDelay:0,concurrency:2};
+let changes=0,submits=0;
+window.chrome={storage:{local:{get:async()=>({mcqSettings:settings})}},runtime:{onMessage:{addListener:fn=>listeners.push(fn)},sendMessage(msg,cb){
+ let r={ok:true};if(msg.type==='MCQ_SESSION_GET')r={session:null};
+ if(msg.type==='MCQ_SOLVE'){
+  requests.push(msg.payload);
+  const row=msg.payload.stem.match(/Match ONLY this row: ([a-e])/i)?.[1];
+  const target=['a','e'].includes(row)?'Negative Externality':'Positive Externality';
+  r={ok:true,letters:[row?msg.payload.options.find(o=>o.text===target).letter:'B'],confidence:1};
+ }
+ if(msg.type==='MAS_HIGHLIGHTS_SET')for(const fn of listeners)fn({type:'MAS_HIGHLIGHTS',payload:msg.payload},{},()=>{});
+ if(cb)cb(r);return Promise.resolve(r);
+}}};
+const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));
+const send=type=>new Promise(resolve=>listeners[0]({type},{},resolve));
+function key(type,code='KeyW'){document.dispatchEvent(new KeyboardEvent(type,{key:code==='KeyW'?'w':'p',code,altKey:true,shiftKey:code==='KeyW',ctrlKey:code==='KeyP',bubbles:true,cancelable:true}))}
+async function settle(field,phases){for(let i=0;i<300&&phases.includes(__MCQ_DEBUG__[field].phase);i++)await sleep(20)}
+async function tap(){key('keydown');key('keyup');await settle('onePickStatus',['loading','checking'])}
+</script><script src="../content/detector.js"></script><script src="../content/vision.js"></script><script src="../content/solver.js"></script><script>
+(async()=>{
+ const checks=[],check=(name,ok)=>checks.push([name,!!ok]);
+ try{
+  const fixture=await(await fetch('./canvas-vision-fixture.html')).text();page.innerHTML=fixture;
+  page.querySelectorAll('input').forEach(i=>i.disabled=false);
+  // Headless virtual-time会在解码线程运行时快进超时；先等待真实资源加载再测编码。
+  await Promise.all([...page.querySelectorAll('img')].map(image=>{image.loading='eager';return image.decode()}));
+  page.addEventListener('change',()=>changes++);
+  page.insertAdjacentHTML('beforeend','<button id="submitQuiz">Submit Quiz</button>');page.querySelector('button').onclick=()=>submits++;
+  const all=__MCQ_DETECTOR__.collect(),matching=all.filter(q=>q.kind==='matching'),graph=all[0];
+  window.testDetails=all.map(q=>({stem:q.stem.slice(0,100),container:q.container.id,kind:q.kind,visuals:q.visuals.length,inputs:q.options.map(o=>!!o.input)}));
+  check('实际附件11题转换为10题加5个匹配项',all.length===15&&matching.length===5);
+  check('图表题捕获恰好一张图片',graph.visuals.length===1&&graph.visuals[0].source.includes('surplus'));
+  check('题目不含隐藏原文评分或个人信息',all.every(q=>!q.stem.includes('Minghao')&&!/\d\s*pts\b/.test(q.stem)));
+  check('五行完整保留总题干及a-e标识',matching.every((q,i)=>q.stem.includes('other houses on her block')&&q.stem.endsWith(['a','b','c','d.','e.'][i])));
+  check('每行仅有两个实际选项且排除Choose',matching.every(q=>q.options.length===2&&q.options[0].text==='Positive Externality'&&!q.incomplete));
+  check('每行hash唯一并在重复扫描后保持稳定',new Set(matching.map(q=>q.hash)).size===5&&all.map(q=>q.hash).join()===__MCQ_DETECTOR__.collect().map(q=>q.hash).join());
+  const prepared=await __MAS_VISION__.prepare(graph);
+  check('实际图表成功编码PNG',prepared.length===1&&prepared[0].dataUrl.startsWith('data:image/png;base64,')&&prepared[0].dataUrl.length>1000);
+  await tap();
+  check('按键经solver发送图表字节与原始题干',requests[0].images?.[0].dataUrl.startsWith('data:image/png;base64,')&&requests[0].stem.includes('consumer surplus'));
+  check('图表题仍按字母映射选中B',graph.options[1].input.checked);
+  for(let i=1;i<15;i++)await tap();
+  check('快捷键依次覆盖普通题与五个下拉行',__MCQ_DEBUG__.onePickStatus.phase==='selected'&&requests.length===15);
+  const selects=matching.map(q=>q.answerSelect);
+  check('截图五行a-e填入各自实际value',selects.map(s=>s.value).join() === '7809,9879,9879,9879,7809');
+  check('配对请求保留完整上下文及指定行',requests.filter(q=>q.stem.includes('Match ONLY')).length===5);
+  check('快捷键不提交也不显示窗口',submits===0&&(!document.getElementById('__mcq_panel_host')||getComputedStyle(document.getElementById('__mcq_panel_host')).display==='none'));
+  selects[0].value='9879';selects[3].value='';graph.options[0].input.checked=true;
+  const before=requests.length;await tap();
+  check('末尾整页纠错包括下拉错选和漏选',__MCQ_DEBUG__.onePickStatus.phase==='checked'&&__MCQ_DEBUG__.onePickStatus.corrected===3&&selects[0].value==='7809'&&selects[3].value==='9879');
+  check('整页纠错复用答案缓存',requests.length===before&&submits===0);
+  await send('MCQ_RESET');selects.forEach(s=>s.value='');
+  key('keydown','KeyP');await settle('highlightStatus',['loading']);
+  check('按住快捷键高亮每个下拉框的建议',page.querySelectorAll('.__mas_select_hint').length===5&&selects.every(s=>s.classList.contains('__mcq_pick')));
+  check('高亮不写入匹配值',selects.every(s=>s.value===''));
+  key('keyup','KeyP');
+  check('松键隐藏配对建议',[...page.querySelectorAll('.__mas_select_hint')].every(s=>getComputedStyle(s).display==='none'));
+  selects[0].disabled=true;
+  check('禁用匹配项只读扫描且不加入可写题',__MCQ_DETECTOR__.collect(document,{includeReadOnly:true}).find(q=>q.answerSelect===selects[0]).readOnly&&!__MCQ_DETECTOR__.collect().some(q=>q.answerSelect===selects[0]));selects[0].disabled=false;
+  const c=document.createElement('canvas');c.width=200;c.height=100;graph.container.querySelector('.question_text').append(c);c.getContext('2d').fillRect(0,0,100,100);
+  let cq=__MCQ_DETECTOR__.collect()[0],oldHash=cq.hash;
+  check('Canvas图表按像素编码',(await __MAS_VISION__.prepare(cq)).length===2);
+  c.getContext('2d').clearRect(0,0,200,100);
+  check('画布内容改变后题目hash变化',__MCQ_DETECTOR__.collect()[0].hash!==oldHash);c.remove();
+  graph.container.querySelector('.question_text').insertAdjacentHTML('beforeend','<svg xmlns="http://www.w3.org/2000/svg" width="200" height="100"><path d="M0 100 L200 0" stroke="blue"/></svg>');
+  check('内联SVG图表转换成PNG',(await __MAS_VISION__.prepare(__MCQ_DETECTOR__.collect()[0])).at(-1).dataUrl.startsWith('data:image/png;base64,'));
+  graph.container.querySelector('svg').remove();
+  const label=graph.options[0].clickTarget;label.querySelector('.answer_label').innerHTML='<img src="./vision-assets/consumer producer surplus 1-1.png" width="100" height="100">';
+  const imageChoice=__MCQ_DETECTOR__.collect()[0];
+  check('纯图片选项不会当成缺少文字',!imageChoice.incomplete&&imageChoice.options[0].text==='[Image option]'&&!imageChoice.options[0].unavailable);
+  check('选项图片携带对应字母',imageChoice.visuals.some(v=>v.label==='Option A image'));
+  const broken=new Image();broken.width=100;broken.height=100;broken.src='data:image/png;base64,invalid';page.append(broken);
+  let failed=false;try{await __MAS_VISION__.prepare({visuals:[{element:broken,label:'Question image'}]})}catch(_){failed=true}
+  check('损坏图片明确失败，不能静默降为文字',failed);broken.remove();
+  const missing=matching[0].answerSelect.labels[0];missing.textContent='';
+  check('匹配行缺标签时报告缺失',__MCQ_DETECTOR__.collect().find(q=>q.answerSelect===matching[0].answerSelect).incomplete);
+  check('填写触发站点change事件',changes>=17);
+  async function run(){await send('MCQ_START');await sleep(20);for(let i=0;i<200&&__MCQ_DEBUG__.state.running;i++)await sleep(20)}
+  function renderMatching(){
+    const holder=document.createElement('div');holder.innerHTML=fixture;
+    page.innerHTML='<form><button type="submit">Submit Quiz</button></form>';
+    const form=page.querySelector('form');form.prepend(holder.querySelector('.matching_question'));
+    form.onsubmit=e=>{e.preventDefault();submits++;form.querySelectorAll('select').forEach(s=>s.disabled=true)};
+  }
+  await send('MCQ_RESET');renderMatching();settings.mode='select';await run();
+  check('自动选中模式填写全部五个匹配项且不提交',[...page.querySelectorAll('select')].map(s=>s.value).join()==='7809,9879,9879,9879,7809'&&submits===0&&__MCQ_DEBUG__.state.stats.answered===5);
+  await send('MCQ_RESET');renderMatching();settings.mode='submit';settings.pageTimeout=1000;await run();
+  check('自动提交等待全部匹配项成功后执行一次',submits===1&&[...page.querySelectorAll('select')].every(s=>s.value&&s.disabled)&&__MCQ_DEBUG__.state.stats.failed===0);
+ }catch(error){check('无测试异常: '+error.stack,false)}
+ document.getElementById('verdict').innerHTML=checks.map(([name,ok])=>'<div class="'+(ok?'pass':'fail')+'">'+(ok?'PASS':'FAIL')+' — '+name+'</div>').join('');
+ document.getElementById('out').textContent=JSON.stringify({checks,details:window.testDetails,requests:requests.length,status:__MCQ_DEBUG__.onePickStatus,auto:__MCQ_DEBUG__.state.stats,submits},null,2);window.__TEST_DONE__=true;
+})();
+</script></html>

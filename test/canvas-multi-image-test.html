@@ -1,0 +1,74 @@
+<!doctype html><meta charset="utf-8"><title>Multiple image questions and sequential shortcuts</title>
+<style>.question{border:1px solid;padding:12px;margin:12px}label{display:block}.pass{color:green}.fail{color:red}</style>
+<div id="verdict">Running</div><pre id="out"></pre><div id="page"></div>
+<script>
+const listeners=[],requests=[],pending=new Map(),settings={apiKey:'fake',mode:'submit'};
+let defer=true;
+window.chrome={storage:{local:{get:async()=>({mcqSettings:settings})}},runtime:{onMessage:{addListener:f=>listeners.push(f)},sendMessage(msg,cb){
+ let reply={ok:true};if(msg.type==='MCQ_SESSION_GET')reply={session:null};
+ if(msg.type==='MCQ_SOLVE'){
+  requests.push(msg.payload);
+  reply={ok:true,letters:[msg.payload.hash===window.secondHash?'B':'A'],confidence:1};
+  if(defer){pending.set(msg.payload.hash,()=>cb(reply));return}
+ }
+ if(cb)cb(reply);return Promise.resolve(reply);
+}}};
+const sleep=ms=>new Promise(r=>setTimeout(r,ms)),page=document.getElementById('page');
+function key(type,extra={}){document.dispatchEvent(new KeyboardEvent(type,{key:'w',code:'KeyW',altKey:true,shiftKey:true,bubbles:true,cancelable:true,...extra}))}
+function tap(){key('keydown');key('keyup')}
+async function until(fn){for(let i=0;i<200&&!fn();i++)await sleep(10);if(!fn())throw new Error('等待测试条件超时')}
+const send=type=>new Promise(r=>listeners[0]({type},{},r));
+function image(color){const c=document.createElement('canvas');c.width=40;c.height=30;c.getContext('2d').fillStyle=color;c.getContext('2d').fillRect(0,0,40,30);return c.toDataURL()}
+function render(sources){page.innerHTML=sources.map((src,i)=>`<div class="question multiple_choice_question"><div class="question_text">Choose the answer using the graph.<img src="${src}" width="40" height="30"></div><div class="answers"><label><input type="radio" name="q${i}">First choice</label><label><input type="radio" name="q${i}">Second choice</label></div></div>`).join('')}
+</script><script src="../content/detector.js"></script><script src="../content/vision.js"></script><script src="../content/solver.js"></script><script>
+(async()=>{
+const checks=[],check=(n,v)=>checks.push([n,!!v]);
+try{
+ const red=image('red'),blue=image('blue');render([red,blue,red]);
+ await Promise.all([...page.querySelectorAll('img')].map(i=>i.decode()));
+ let qs=__MCQ_DETECTOR__.collect();secondHash=qs[1].hash;
+ check('同文字不同图片hash不同',qs[0].hash!==qs[1].hash);
+ check('相同内容出现在两个独立控件',qs[0].hash===qs[2].hash&&qs[0].container!==qs[2].container);
+ tap();await until(()=>pending.size===2);
+ check('首次按键最多并发当前与下一道图片题',requests.length===2&&page.querySelectorAll('input:checked').length===0);
+ key('keydown',{repeat:true});key('keyup');
+ tap();tap();
+ pending.get(secondHash)();pending.delete(secondHash);await sleep(20);
+ check('下一题先返回也不会越过当前题点击',page.querySelectorAll('input:checked').length===0);
+ const firstHash=qs[0].hash;pending.get(firstHash)();pending.delete(firstHash);
+ await until(()=>page.querySelectorAll('input:checked').length===3);
+ check('三次独立按键顺序完成三道图片题',qs[0].options[0].input.checked&&qs[1].options[1].input.checked&&qs[2].options[0].input.checked);
+ check('重复题内容复用答案但不跳过其控件',requests.length===2);
+ check('长按repeat没有变成额外整页检查',__MCQ_DEBUG__.onePickStatus.phase==='selected');
+ const before=__MAS_VISION__.stats.encodes;await __MAS_VISION__.prepare(qs[0]);await __MAS_VISION__.prepare(qs[2]);
+ check('同图跨题复用编码不重复绘制',__MAS_VISION__.stats.encodes===before);
+ tap();await until(()=>__MCQ_DEBUG__.onePickStatus.phase==='checked');
+ check('完成后再次按键检查全部三个控件',__MCQ_DEBUG__.onePickStatus.checked===3);
+ const img=qs[0].visuals[0].element,stableHash=qs[0].hash;
+ Object.defineProperty(img,'currentSrc',{configurable:true,get:()=>''});const unloaded=__MCQ_DETECTOR__.collect()[0].hash;
+ Object.defineProperty(img,'currentSrc',{configurable:true,get:()=>red});
+ check('选源完成不改变题目hash',unloaded===stableHash&&__MCQ_DETECTOR__.collect()[0].hash===stableHash);
+ await send('MCQ_RESET');render([red+'#new',blue+'#new']);await Promise.all([...page.querySelectorAll('img')].map(i=>i.decode()));
+ qs=__MCQ_DETECTOR__.collect();secondHash=qs[1].hash;tap();await until(()=>pending.size===2);tap();
+ document.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',code:'Escape',bubbles:true}));
+ [...pending.values()].forEach(resolve=>resolve());pending.clear();await sleep(180);
+ check('Esc取消当前以及图片排队中的选择',page.querySelectorAll('input:checked').length===0&&__MCQ_DEBUG__.onePickStatus.phase==='cancelled');
+ check('快捷键始终不提交且窗口隐藏',!document.querySelector('button[type=submit]')&&(!document.getElementById('__mcq_panel_host')||getComputedStyle(document.getElementById('__mcq_panel_host')).display==='none'));
+ // 使用页面fetch模拟需要登录的Canvas图片，decode永不结束，仍应直接读字节。
+ const remote=document.createElement('img');remote.width=40;remote.height=30;remote.src='https://canvas.example/private/graph';page.append(remote);
+ remote.decode=()=>new Promise(()=>{});const nativeFetch=window.fetch;let pageOptions,fetches=0;
+ const bytes=Uint8Array.from(atob(red.split(',')[1]),c=>c.charCodeAt(0));
+ window.fetch=async(_url,opts)=>{pageOptions=opts;fetches++;return new Response(bytes,{headers:{'content-type':'image/png'}})};
+ const visual={element:remote,label:'Question image'};
+ const results=await Promise.all([__MAS_VISION__.prepare({visuals:[visual]}),__MAS_VISION__.prepare({visuals:[visual]})]);
+ check('图片decode未完成时直接走页面字节读取',results.every(r=>r[0].dataUrl?.startsWith('data:image/png;base64,')));
+ check('同源登录读取不添加API认证头',pageOptions.credentials==='same-origin'&&!pageOptions.headers);
+ check('并发获取相同图片只下载一次',fetches===1);
+ const blocked=remote.cloneNode();blocked.src+='?cors=blocked';page.append(blocked);window.fetch=async()=>{throw new TypeError('CORS blocked')};
+ const fallback=await __MAS_VISION__.prepare({visuals:[{element:blocked,label:'Option B image'}]});
+ check('页面CORS失败才交给后台，不丢失图片与字母',fallback[0].url===blocked.src&&fallback[0].label==='Option B image');
+ window.fetch=nativeFetch;
+}catch(e){check('无测试异常: '+e.stack,false)}
+document.getElementById('verdict').innerHTML=checks.map(([n,v])=>`<div class="${v?'pass':'fail'}">${v?'PASS':'FAIL'} — ${n}</div>`).join('');document.getElementById('out').textContent=JSON.stringify({checks,requests:requests.length,status:__MCQ_DEBUG__.onePickStatus},null,2);
+})();
+</script>
