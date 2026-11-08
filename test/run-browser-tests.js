@@ -5,6 +5,7 @@ const fs=require('node:fs'),path=require('node:path'),os=require('node:os');
 const names=process.argv.slice(2);
 const files=names.length?names:fs.readdirSync(__dirname).filter(n=>n.endsWith('-test.html'));
 async function run(name){
+ if(name==='vision-capture-fallback-test.html')return require('./run-real-time-test')(name);
  const profile=fs.mkdtempSync(path.join(os.tmpdir(),'mas-regression-'));
  const args=['--headless=new','--no-sandbox','--disable-gpu','--disable-gpu-compositing','--disable-features=Vulkan,Dawn,UseSkiaRenderer','--use-angle=swiftshader','--use-gl=swiftshader','--no-first-run','--allow-file-access-from-files','--user-data-dir='+profile,'--virtual-time-budget=50000','--dump-dom',new URL('file:///'+path.join(__dirname,name).replaceAll('\\','/')).href];
  return new Promise(resolve=>{

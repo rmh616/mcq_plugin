@@ -31,7 +31,7 @@ html.__mas_answers_visible .__mcq_pick_warn {
   all: initial;
 }
 
-/* 原生下拉框关闭时看不到候选选项，用同样受快捷键控制的文字显示建议。 */
+/* 下拉框和文本填空旁的建议，同样由按住快捷键控制显示。 */
 .__mas_select_hint {
   display: none !important;
 }

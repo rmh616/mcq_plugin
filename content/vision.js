@@ -1,4 +1,4 @@
-/** 只在实际求解有图题时编码，不对整页截图，不在扫描时下载图片。 */
+/** 仅在求解有图题时读取；原图读取失败才允许后台裁剪可见题图，不在扫描时读取。 */
 (function () {
   'use strict';
   if (window.__MAS_VISION__) return;
@@ -9,6 +9,13 @@
   const sourceCache = new Map();
   const sourceJobs = new Map();
   const stats = { encodes: 0, cacheHits: 0, pageFetches: 0 };
+
+  function rememberSource(key, result) {
+    sourceCache.set(key, result);
+    while (sourceCache.size > 8 || [...sourceCache.values()].reduce((size, value) => size + value.dataUrl.length, 0) > 16 * 1024 * 1024) {
+      sourceCache.delete(sourceCache.keys().next().value);
+    }
+  }
 
   async function fetchInPage(url) {
     const ctrl = new AbortController();
@@ -107,8 +114,7 @@
     if (sourceJobs.has(key)) { stats.cacheHits++; return sourceJobs.get(key); }
     const task = encode(visual).then(result => {
       if (result.dataUrl) {
-        sourceCache.set(key, result);
-        while (sourceCache.size > 8 || [...sourceCache.values()].reduce((n, v) => n + v.dataUrl.length, 0) > 16 * 1024 * 1024) sourceCache.delete(sourceCache.keys().next().value);
+        rememberSource(key, result);
       } else imageCache.delete(el); // 后台下载失败后，下次按键允许重试页面读取。
       return result;
     }, error => { imageCache.delete(el); throw error; }).finally(() => sourceJobs.delete(key));
@@ -128,5 +134,42 @@
     }
     return images;
   }
-  window.__MAS_VISION__ = { prepare, stats };
+
+  async function captureFallback(q, images) {
+    if (window.top !== window) throw new Error('截图兜底仅支持顶层题目页，请在原页面打开题目');
+    const result = images.slice();
+    for (let index=0; index<images.length; index++) {
+      if (!images[index].url) continue;
+      const image = q.visuals[index]?.element;
+      if (!image?.isConnected || image.tagName.toLowerCase() !== 'img' || !image.complete || !image.naturalWidth) throw new Error('题图尚未加载，不能用截图代替');
+      if ((image.currentSrc || image.src) !== images[index].url) throw new Error('题图已变化，请重试');
+      const key = images[index].url + '|' + (image.getAttribute('srcset') || '');
+      if (sourceCache.has(key)) {
+        result[index] = {label:images[index].label, ...sourceCache.get(key)};
+        continue;
+      }
+      const token = crypto.randomUUID();
+      const previous = image.getAttribute('data-mas-capture-target');
+      image.setAttribute('data-mas-capture-target',token);
+      try {
+        const response = await new Promise(resolve => {
+          chrome.runtime.sendMessage({type:'MAS_CAPTURE_IMAGE',payload:{token, source:images[index].url, hash:q.hash}}, reply => {
+            resolve(chrome.runtime.lastError ? {ok:false,error:chrome.runtime.lastError.message} : reply);
+          });
+        });
+        if (!response?.ok || !/^data:image\/png;base64,[A-Za-z0-9+/]+={0,2}$/.test(response.dataUrl || '')) throw new Error(response?.error || '未能获取题图截图');
+        result[index] = {label:images[index].label,dataUrl:response.dataUrl};
+        // 后续小题可能已经滚到图表下方，复用已验证的同一题图裁剪，避免再截残图。
+        rememberSource(key, {dataUrl:response.dataUrl});
+      } finally {
+        if (image.getAttribute('data-mas-capture-target') === token) {
+          if (previous === null) image.removeAttribute('data-mas-capture-target');
+          else image.setAttribute('data-mas-capture-target',previous);
+        }
+      }
+    }
+    if (result.reduce((size,image)=>size+(image.dataUrl || image.url).length,0)>MAX_TOTAL) throw new Error('该题图片总量过大，请缩小图片');
+    return result;
+  }
+  window.__MAS_VISION__ = { prepare, captureFallback, stats };
 })();

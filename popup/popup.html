@@ -50,8 +50,8 @@
         模式
         <select id="mode">
           <option value="highlight">仅高亮建议（不点击）</option>
-          <option value="select">自动选中，不提交</option>
-          <option value="submit">自动选中并提交 / 翻页</option>
+          <option value="select">自动选中 / 填写，不提交</option>
+          <option value="submit">自动选中 / 填写并提交 / 翻页</option>
         </select>
         <small>按住 <kbd>Ctrl</kbd> + <kbd>Alt</kbd> + <kbd>P</kbd> 查看高亮，松开隐藏。每按一次 <kbd>Alt</kbd> + <kbd>Shift</kbd> + <kbd>W</kbd>，按顺序选择一个正确MCQ选项；全部选完后再按一次，按已有模型答案核对整页并一次修正错选、漏选和多勾，不提交。快捷键均隐藏悬浮窗口，<kbd>Esc</kbd> 可中断。首次使用先填写 API Key。</small>
       </label>
@@ -75,7 +75,7 @@
         <label>
           并发请求数
           <input id="concurrency" type="number" min="1" max="6" step="1" />
-          <small>一页一题时无效。</small>
+          <small>一页一题时无效；Connect 表格自动填写按顺序处理。</small>
         </label>
       </div>
       <label class="check">

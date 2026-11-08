@@ -1,0 +1,131 @@
+<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>Connect iframe worksheet dropdowns</title>
+<link rel="stylesheet" href="../content/overlay.css"><style>body{font:14px sans-serif}iframe{width:900px;height:400px;border:1px solid}.pass{color:green}.fail{color:red}</style>
+<header><button id="handIn">Submit</button><button>Save &amp; Exit</button></header><button id="checkWork">Check my work</button>
+<main class="worksheet__main"><p>What is the level of measurement for each of the following variables?</p><iframe class="external" title="Assessment Tool iFrame" src="./connect-sheet-fixture.html"></iframe></main>
+<footer><button class="footer__link--next" aria-label="Next">Next</button></footer>
+<div id="verdict">Running</div><pre id="out"></pre>
+<script>
+const contexts=[],requests=[],saved=[],settings={apiKey:'fake',mode:'highlight',concurrency:6,actionDelay:5,submitDelay:5,maxRounds:1,pageTimeout:1500};
+const targets=['Interval','Ratio','Nominal','Nominal','Ordinal','Ratio'];
+let nextClicks=0,handIns=0,checksClicked=0,menuOpens=0,rejectRow=-1,replyMultiple=false,buttonOnly=false,buttonClicks=0,cancelOnOpen=false;
+const frame=document.querySelector('iframe'),listeners=[];
+function chromeFor(win,listeners){contexts.push({win,listeners});return {
+ storage:{local:{get:async()=>({mcqSettings:settings})}},runtime:{onMessage:{addListener:fn=>listeners.push(fn)},sendMessage(msg,cb){
+  let result={ok:true};
+  if(msg.type==='MCQ_SOLVE'){
+   requests.push(msg.payload);const match=msg.payload.stem.match(/Match ONLY this row: ([a-f])\./),index=match?match[1].charCodeAt(0)-97:-1;
+   const option=msg.payload.options.find(o=>o.text===targets[index]);
+   result={ok:true,letters:replyMultiple?['A','B']:[option?.letter||'Z'],confidence:0.95};
+  }
+  if(msg.type==='MAS_HIGHLIGHTS_SET')for(const c of contexts)for(const fn of c.listeners)fn({type:'MAS_HIGHLIGHTS',payload:msg.payload},{},()=>{});
+  if(cb)cb(result);return Promise.resolve(result);
+ }}
+};}
+window.chrome=chromeFor(window,listeners);
+const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));
+const send=type=>new Promise(resolve=>listeners[0]({type},{},resolve));
+async function run(){await send('MCQ_START');await sleep(30);for(let i=0;i<160&&__MCQ_DEBUG__.state.running;i++)await sleep(50);}
+document.getElementById('handIn').onclick=()=>handIns++;
+document.getElementById('checkWork').onclick=()=>checksClicked++;
+document.querySelector('.footer__link--next').onclick=()=>{
+ nextClicks++;frame.contentDocument.querySelector('#jQuerySheet').remove();
+ document.querySelector('.worksheet__main').insertAdjacentHTML('afterbegin','<fieldset><p>A new question after all worksheet rows were saved.</p><label><input type="radio" name="new">Yes</label><label><input type="radio" name="new">No</label></fieldset>');
+};
+</script><script src="../content/detector.js"></script><script src="../content/solver.js"></script><script>
+window.addEventListener('load',async()=>{
+ const checks=[],check=(name,ok)=>checks.push([name,!!ok]),D=__MCQ_DETECTOR__,debug=__MCQ_DEBUG__,doc=frame.contentDocument;
+ try{
+  const original=doc.body.innerHTML;
+  const cells=()=>Array.from(doc.querySelectorAll('td.responseCell'));
+  function wire(){
+   const pool=doc.querySelector('.listContainer'),menu=pool.querySelector('[role=listbox]'),choices=Array.from(menu.querySelectorAll('li')).map(el=>el.outerHTML);
+   for(const [index,cell]of cells().entries())cell.addEventListener('mousedown',()=>{
+    cells().forEach(el=>el.classList.remove('jSheetCellActive'));cell.classList.add('jSheetCellActive');
+    const open=()=>{
+    menuOpens++;
+    if(cancelOnOpen)doc.dispatchEvent(new frame.contentWindow.KeyboardEvent('keydown',{key:'Escape',code:'Escape',bubbles:true}));
+    menu.setAttribute('aria-labelledby',cell.id);
+    // The shared menu is destroyed/rebuilt on each row activation. Old li nodes must not be clicked.
+    menu.innerHTML=choices.join('');menu.querySelectorAll('li').forEach((item,i)=>{
+      item.id='dropdown_option_'+cell.id+'_'+i;
+      item.onclick=()=>{
+       const value=item.querySelector('.list_content').textContent.trim();
+       if(value&&index!==rejectRow){cell.textContent=value;saved.push([index,value]);}
+       pool.style.display='none';cell.setAttribute('aria-expanded','false');
+      };
+    });
+    const r=cell.getBoundingClientRect();pool.style.left=r.left+'px';pool.style.top=r.bottom+'px';pool.style.display='block';cell.setAttribute('aria-expanded','true');
+    };
+    if(buttonOnly){
+      pool.style.display='none';doc.querySelectorAll('.dropdownButton').forEach(el=>el.remove());
+      const button=doc.createElement('input');button.type='button';button.className='dropdownButton';button.title='Show All Items';button.value='▼';
+      button.onclick=()=>{buttonClicks++;open();};doc.body.append(button);
+    }else open();
+   });
+  }
+  const render=()=>{doc.body.innerHTML=original;debug.state.done.clear();rejectRow=-1;replyMultiple=false;wire();};
+  wire();
+  let qs=D.collect();
+  check('外层页面识别iframe内六个配对行',qs.length===6&&qs.every(q=>q.kind==='matching'&&q.answerCell?.ownerDocument===doc));
+  check('六行均有共同指令和各自行标签',qs.every((q,i)=>q.stem.startsWith('What is the level of measurement')&&q.stem.includes('Match ONLY this row: '+String.fromCharCode(97+i)+'.')));
+  check('第e行完整长标签保留',qs[4].stem.includes('freshman, sophomore, junior, or senior'));
+  check('关闭的共享菜单提供四个真实类别',qs.every(q=>q.options.map(o=>o.text).join('|')==='Interval|Nominal|Ordinal|Ratio'));
+  check('空占位项和工具栏不是候选',qs.every(q=>q.options.length===4&&!q.incomplete));
+  check('每个行hash独立',new Set(qs.map(q=>q.hash)).size===6);
+  const hashes=qs.map(q=>q.hash);
+  check('仅扫描不打开菜单也不写值',menuOpens===0&&cells().every(el=>D.connectCellText(el)===''));
+  const scan=await send('MCQ_SCAN'),shadow=document.getElementById('__mcq_panel_host').shadowRoot;
+  check('扫描面板显示六个配对项',scan.count===6&&shadow.querySelectorAll('.pick').length===6&&shadow.querySelector('.meta').textContent.includes('6 个配对项'));
+  check('本页优先下一题而非整份Submit',debug.findAdvanceButton(null)?.el===document.querySelector('.footer__link--next'));
+  check('底部Next在导航过滤下仍可识别',debug.findAdvanceButton(null,{excludeChrome:true})?.label==='Next');
+  await run();
+  check('高亮按六行分别求解',requests.length===6&&debug.state.stats.answered===6);
+  check('高亮建议对应每一行',cells().every((cell,i)=>cell.querySelector('.__mas_select_hint')?.textContent==='建议：'+targets[i]));
+  check('高亮不改值、不打开菜单、不提交',saved.length===0&&menuOpens===0&&nextClicks===0&&handIns===0&&checksClicked===0);
+  check('建议在单元格内且不污染hash',D.collect().every((q,i)=>q.hash===hashes[i]));
+
+  // Simulate the real extension injecting into all_frames as well as the host.
+  const childListeners=[];frame.contentWindow.chrome=chromeFor(frame.contentWindow,childListeners);
+  for(const file of ['detector.js','solver.js'])await new Promise((resolve,reject)=>{
+    const script=doc.createElement('script');script.src='../content/'+file;script.onload=resolve;script.onerror=reject;doc.body.append(script);
+  });
+  check('iframe本身交由外层统一处理避免重复识别',frame.contentWindow.__MCQ_DETECTOR__.collect().length===0);
+  let childReply=false;childListeners[0]({type:'MCQ_START'},{},()=>{childReply=true;});await sleep(30);
+  check('子frame不重复启动或抢占扫描响应',!childReply&&!frame.contentWindow.__MCQ_DEBUG__.state.running&&requests.length===6);
+  const key=type=>doc.dispatchEvent(new frame.contentWindow.KeyboardEvent(type,{key:'p',code:'KeyP',ctrlKey:true,altKey:true,bubbles:true}));
+  key('keydown');await sleep(50);check('iframe内快捷键显示已有行建议',cells().every(cell=>getComputedStyle(cell.querySelector('.__mas_select_hint')).display!=='none'));
+  key('keyup');await sleep(10);check('松键隐藏建议且不写入',cells().every(cell=>getComputedStyle(cell.querySelector('.__mas_select_hint')).display==='none')&&saved.length===0);
+  await send('MCQ_SCAN');
+
+  render();settings.mode='select';await run();
+  check('六行通过实际菜单保存正确类别',cells().map(D.connectCellText).join('|')===targets.join('|')&&saved.length===6);
+  check('共用菜单并发求解时仍串行选择正确行',saved.every(([index,value])=>value===targets[index])&&new Set(saved.map(([index])=>index)).size===6);
+  check('仅填写模式不翻页、不核对或交整份作业',nextClicks===0&&handIns===0&&checksClicked===0);
+  check('单元格选中和菜单焦点变化不改变hash',D.collect().every((q,i)=>q.hash===hashes[i]));
+  render();buttonOnly=true;await run();buttonOnly=false;
+  check('需要Show All Items浮动按钮时也能逐行选择',buttonClicks===6&&cells().map(D.connectCellText).join('|')===targets.join('|'));
+  render();cancelOnOpen=true;const beforeCancel=saved.length;await run();cancelOnOpen=false;
+  check('Esc取消共用菜单及队列中尚未发生的选择',saved.length===beforeCancel&&cells().every(cell=>D.connectCellText(cell)==='')&&nextClicks===0);
+
+  render();settings.mode='submit';rejectRow=2;const savedBefore=saved.length;await run();
+  check('站点拒绝某行保存时不翻页',nextClicks===0&&D.connectCellText(cells()[2])===''&&debug.state.stats.failed===1);
+  check('某行失败后其余行仍可按正确映射处理',saved.length===savedBefore+5);
+  render();cells()[0].removeAttribute('headers');const before=requests.length;await run();
+  check('缺失行标签明确标记并阻止翻页',D.collect()[0].incomplete&&requests.length===before+5&&nextClicks===0);
+  render();cells()[1].setAttribute('dropdownid','different-list');await run();
+  check('不同dropdownid不会套用其它行候选',D.collect()[1].incomplete&&nextClicks===0);
+  render();doc.querySelector('.listContainer').remove();await run();
+  check('候选数据缺失时提示稍后重试',D.collect().every(q=>q.incomplete&&q.issues.some(issue=>issue.includes('候选数据尚未就绪')))&&nextClicks===0);
+  render();cells()[0].setAttribute('aria-disabled','true');
+  check('只读行仅供扫描且不参与作答',D.collect().length===5&&D.collect(document,{includeReadOnly:true})[0].readOnly);
+  render();replyMultiple=true;await run();check('一个单元格多个答案时拒绝选择',cells().every(cell=>D.connectCellText(cell)==='')&&nextClicks===0);
+
+  render();await run();
+  check('六行全部保存后仅点一次Next',nextClicks===1&&handIns===0&&checksClicked===0);
+  check('翻页后发现新题且没有超时',D.collect().length===1&&D.collect()[0].stem==='A new question after all worksheet rows were saved.'&&debug.state.stats.timeouts===0);
+ }catch(error){check('无测试异常: '+error.stack,false);debug.state.running=false;}
+ document.getElementById('verdict').innerHTML=checks.map(([name,ok])=>'<div class="'+(ok?'pass':'fail')+'">'+(ok?'PASS':'FAIL')+' — '+name+'</div>').join('');
+ document.getElementById('out').textContent=JSON.stringify({checks,requests:requests.length,saved,nextClicks,handIns,checksClicked,stats:debug.state.stats},null,2);
+ window.__TEST_DONE__=true;
+});
+</script></html>

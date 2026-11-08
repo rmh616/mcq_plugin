@@ -1,0 +1,93 @@
+<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>Connect currency validation and part order</title>
+<style>iframe{width:800px;height:160px;display:block}.pass{color:green}.fail{color:red}</style>
+<main class="worksheet__main"><p>A set of data consists of 45 observations between $0 and $29. Required: a. How many classes would you recommend for the frequency distribution? b. What class interval would you recommend? Round your answer to the nearest whole number.</p>
+<iframe class="external" title="Assessment Tool iFrame" src="./connect-classes-fixture.html?part=a"></iframe>
+<iframe class="external" title="Assessment Tool iFrame" src="./connect-classes-fixture.html?part=b"></iframe></main>
+<footer><button class="footer__link--next">Next</button></footer><div id="verdict">Running</div><pre id="out"></pre>
+<script>
+const listeners=[],requests=[],saved=[],settings={apiKey:'fake',mode:'select',concurrency:4,actionDelay:5,submitDelay:5,pageTimeout:1500,maxRounds:1};
+let intervalReply='5',formatter=value=>'<span class="currencySymbol">$</span>'+Number(value).toFixed(2),delay=0,next=0,lateChange=false,editors=0;
+const frames=Array.from(document.querySelectorAll('iframe'));
+window.chrome={storage:{local:{get:async()=>({mcqSettings:settings})}},runtime:{onMessage:{addListener:fn=>listeners.push(fn)},sendMessage(msg,cb){
+ let result={ok:true};
+ if(msg.type==='MCQ_CONNECT_CHOICES')result={ok:true,frames:[]};
+ if(msg.type==='MCQ_SOLVE'){
+  const interval=msg.payload.stem.includes('Match ONLY this row: Class interval');
+  requests.push({interval,classes:frames[0].contentDocument.querySelector('td.responseCell')?.textContent,payload:msg.payload});
+  result={ok:true,value:interval?intervalReply:'6',confidence:0.95};
+  // If solving concurrently, b returns before a. Ordered auto mode must avoid this.
+  setTimeout(()=>cb(result),interval?0:60);return;
+ }
+ if(cb)cb(result);return Promise.resolve(result);
+}}};
+const send=type=>new Promise(resolve=>listeners[0]({type},{},resolve));
+const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));
+async function run(){await send('MCQ_START');await sleep(30);for(let i=0;i<180&&__MCQ_DEBUG__.state.running;i++)await sleep(50);}
+</script><script src="../content/detector.js"></script><script src="../content/solver.js"></script><script>
+window.addEventListener('load',async()=>{
+ const checks=[],check=(name,ok)=>checks.push([name,!!ok]),D=__MCQ_DETECTOR__,debug=__MCQ_DEBUG__,docs=frames.map(frame=>frame.contentDocument),cells=docs.map(doc=>doc.querySelector('td.responseCell'));
+ try{
+  docs[1].getElementById('label').textContent='Class interval';
+  cells[1].innerHTML='<span class="currencySymbol">$</span>';
+  // Reproduce implementation-specific, disconnected document ordering.
+  for(const cell of cells){const native=cell.compareDocumentPosition.bind(cell);cell.compareDocumentPosition=other=>other.ownerDocument!==cell.ownerDocument?Node.DOCUMENT_POSITION_DISCONNECTED|Node.DOCUMENT_POSITION_FOLLOWING:native(other);}
+  for(let index=0;index<2;index++){
+   const doc=docs[index],cell=cells[index],win=frames[index].contentWindow;
+   cell.onmousedown=()=>cell.classList.add('jSheetCellActive');
+   cell.ondblclick=()=>{
+    editors++;const editor=doc.createElement('textarea');editor.className='jSheetInPlaceEdit';doc.body.append(editor);
+    editor.onkeydown=event=>{
+     if(event.keyCode!==13)return;const value=editor.value;editor.remove();
+     const commit=()=>{
+      cell.innerHTML=index===0?value:formatter(value);saved.push({index,value,display:cell.textContent});
+      if(index===1&&lateChange)setTimeout(()=>{cell.innerHTML='<span class="currencySymbol">$</span>6.00';},120);
+     };
+     if(index===1&&delay)setTimeout(commit,delay);else commit();
+    };
+   };
+  }
+  const qs=D.collect(),hashes=qs.map(q=>q.hash);
+  check('两个iframe按页面a/b顺序识别',qs.length===2&&qs[0].answerNumberCell===cells[0]&&qs[1].answerNumberCell===cells[1]);
+  await run();
+  check('先求解并保存Classes再请求Class interval',requests.length===2&&!requests[0].interval&&requests[1].interval&&requests[1].classes==='6');
+  check('即使b回复更快也不会反向操作',saved.map(item=>item.index).join(',')==='0,1');
+  check('货币符号和小数格式不再导致误报',debug.state.stats.answered===2&&debug.state.stats.failed===0&&cells[1].textContent==='$5.00');
+  check('填写后hash不受货币显示格式影响',D.collect().every((q,i)=>q.hash===hashes[i]));
+  const before=editors;await run();
+  check('已有正确格式化值时不重复编辑',editors===before&&debug.state.stats.failed===0);
+
+  async function formatCase(label,value,html,ok=true,wait=0){
+    intervalReply=value;formatter=html;delay=wait;cells[1].innerHTML='<span class="currencySymbol">$</span>';await run();
+    check(label,ok?debug.state.stats.failed===0:debug.state.stats.failed===1&&next===0);
+  }
+  await formatCase('无独立span的美元前缀也能校验','5',()=>'$ 5.00');
+  await formatCase('合法千分位金额可以校验','1200.5',()=>'<span class="currencySymbol">$</span>1,200.50');
+  await formatCase('负数会计括号格式可以校验','-5',()=>'<span class="currencySymbol">$</span>(5.00)');
+  await formatCase('Unicode减号与美元符号可以校验','-5',()=>'−$5.00');
+  await formatCase('合法的0金额不是空白','0',()=>'<span class="currencySymbol">$</span>0.00');
+  await formatCase('延迟格式化保存会等待实际数值','5',()=>'<span class="currencySymbol">$</span>5.00',true,200);
+  await formatCase('显示了其它金额仍判定保存失败','5',()=>'<span class="currencySymbol">$</span>6.00',false);
+  await formatCase('只有美元符号不会误判为已填','5',()=>'<span class="currencySymbol">$</span>',false);
+  await formatCase('错误千分位不能被宽松解析','12',()=>'$1,2',false);
+  await formatCase('金额夹杂非数字文字仍拒绝','5',()=>'$5 apples',false);
+  const oldEditors=editors;intervalReply='$5';cells[1].innerHTML='<span class="currencySymbol">$</span>';await run();
+  check('模型回复依旧拒绝货币符号而不写入',editors===oldEditors&&debug.state.stats.failed===1);
+
+  intervalReply='5';delay=0;formatter=()=>'<span class="currencySymbol">$</span>5.00';
+  settings.mode='submit';settings.submitDelay=250;lateChange=true;cells[1].innerHTML='<span class="currencySymbol">$</span>';
+  await run();
+  check('翻页前金额被改为其它值时仍阻止Next',next===0&&cells[1].textContent==='$6.00');
+  lateChange=false;settings.submitDelay=5;cells[1].innerHTML='<span class="currencySymbol">$</span>';
+  document.querySelector('.footer__link--next').onclick=()=>{
+   next++;docs.forEach(doc=>doc.querySelector('#jQuerySheet').remove());
+   document.querySelector('.worksheet__main').insertAdjacentHTML('afterbegin','<fieldset><p>A new question after formatted currency validation.</p><label><input type="radio" name="new">Yes</label><label><input type="radio" name="new">No</label></fieldset>');
+  };
+  await run();
+  check('金额正确时完成两项校验并仅翻页一次',next===1&&debug.state.stats.answered===2&&debug.state.stats.failed===0&&debug.state.stats.timeouts===0);
+  check('格式化金额题之后正常识别下一题',D.collect()[0]?.stem==='A new question after formatted currency validation.');
+ }catch(error){check('无测试异常: '+error.stack,false);debug.state.running=false;}
+ document.getElementById('verdict').innerHTML=checks.map(([name,ok])=>'<div class="'+(ok?'pass':'fail')+'">'+(ok?'PASS':'FAIL')+' — '+name+'</div>').join('');
+ document.getElementById('out').textContent=JSON.stringify({checks,next,saved,editors,stats:debug.state.stats},null,2);
+ window.__TEST_DONE__=true;
+});
+</script></html>

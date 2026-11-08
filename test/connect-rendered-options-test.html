@@ -1,0 +1,93 @@
+<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>Connect public rendered dropdown options</title>
+<link rel="stylesheet" href="../content/overlay.css"><style>iframe{width:1000px;height:240px;display:block}.pass{color:green}.fail{color:red}</style>
+<main class="worksheet__main"><p>AVX Home Entertainment Incorporated recently began a “no-hassles” return policy. A sample of 505 customers who recently returned items showed 320 thought the policy was fair, 150 thought it took too long to complete the transaction, and the rest had no opinion. On the basis of this information, make an inference about customer reaction to the new policy. Note: Round your answers to 1 decimal place.</p>
+<iframe class="external" title="Assessment Tool iFrame" src="./connect-reactions-numbers-fixture.html"></iframe>
+<iframe class="external" title="Assessment Tool iFrame" src="./connect-reactions-choice-fixture.html"></iframe></main>
+<footer><button class="footer__link--next">Next</button></footer><div id="verdict">Running</div><pre id="out"></pre>
+<script>
+const settings={apiKey:'fake',model:'test',baseUrl:'https://api.example.invalid',mode:'highlight',useCache:false,actionDelay:0,submitDelay:0,pageTimeout:1200,concurrency:4,maxRounds:1};
+const memory={},listeners=[],requests=[],saved=[];let backgroundListener,clicks=0,opens=0,next=0,raw=['','~reactionFair~','[reactionLong]','[reactionNone]'];
+const sender={tab:{id:7},frameId:0,documentId:'outer-document',url:location.href};
+const storage={async get(key){return key==='mcqSettings'?{mcqSettings:settings}:{[key]:memory[key]};},async set(data){Object.assign(memory,data);},async remove(key){delete memory[key];}};
+window.chrome={storage:{local:storage,session:storage},runtime:{onInstalled:{addListener(){}},onMessage:{addListener(fn){if(!backgroundListener)backgroundListener=fn;else listeners.push(fn);}},sendMessage(msg,cb){const handled=backgroundListener(msg,sender,result=>{if(cb)cb(result);});if(!handled&&cb)cb({ok:true});}},tabs:{onRemoved:{addListener(){}},async sendMessage(_id,msg){listeners.forEach(fn=>fn(msg,{},()=>{}));}},scripting:{async executeScript(config){return [{result:config.func(...config.args)}];}}};
+const nativeFetch=window.fetch.bind(window);
+window.fetch=async(url,options)=>{
+ if(!String(url).endsWith('/chat/completions'))return nativeFetch(url,options);
+ const request=JSON.parse(options.body);requests.push(request);const prompt=request.messages[1].content,numeric=request.messages[0].content.includes('"value"');
+ const value=prompt.includes('row: Fair Percent')?'63.4':prompt.includes('row: Too long Percent')?'29.7':'6.9';
+ const letter=prompt.match(/([A-Z])\. thought the policy was fair(?:\n|$)/)?.[1];
+ return {ok:true,json:async()=>({choices:[{message:{content:JSON.stringify(numeric?{value,confidence:0.95}:{answers:letter?[letter]:[],confidence:0.95,reason:letter?'local test':'Options contain only placeholders'})}}]})};
+};
+const send=type=>new Promise(resolve=>listeners[0]({type},{},resolve));
+const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));
+async function run(){await send('MCQ_START');await sleep(30);for(let i=0;i<150&&__MCQ_DEBUG__.state.running;i++)await sleep(50);}
+</script><script src="../background.js"></script><script src="../content/detector.js"></script><script src="../content/solver.js"></script><script>
+window.addEventListener('load',async()=>{
+ const checks=[],check=(name,ok)=>checks.push([name,!!ok]),D=__MCQ_DETECTOR__,debug=__MCQ_DEBUG__,frames=Array.from(document.querySelectorAll('iframe')),doc=frames[1].contentDocument,win=frames[1].contentWindow;
+ try{
+  const labels={reactionFair:'thought the policy was fair',reactionLong:'thought it took too long',reactionNone:'had no opinion'};
+  await new Promise((resolve,reject)=>{const script=doc.createElement('script');script.src='./connect-label-renderers.js';script.onload=resolve;script.onerror=reject;doc.body.append(script);});
+  win.EZ={random:key=>labels[key]};
+  const jq=element=>{
+    if(typeof element==='string'){
+      const textarea=doc.createElement('textarea');return {html(text){textarea.innerHTML=text;return this;},text(){return textarea.value;}};
+    }
+    return {data(key){if(key!=='dropdown')throw new Error('Unexpected state access');return raw;}};
+  };jq.trim=value=>String(value).trim();win.jQuery=win.$=jq;
+  win.actInstance={util:{cellUtil:win.connectFixtureRenderers.cellUtil},models:{Navigationcarousel:win.connectFixtureRenderers.navigation}};
+  for(const name of ['sheetInstance','getFormula','toolstate','solution'])Object.defineProperty(win.actInstance,name,{get(){throw new Error('Forbidden state access: '+name);}});
+  frames[0].contentWindow.jQuery=()=>({data(){return undefined;}});
+  doc.addEventListener('click',()=>clicks++);doc.addEventListener('mousedown',()=>clicks++);
+  const cell=doc.querySelector('td.responseCell');
+  check('附件包含三个数字格和一个无菜单DOM的结论下拉框',D.collect().length===4&&!doc.querySelector('.listContainer'));
+  await send('MCQ_SCAN');let questions=D.collect(),choice=questions.find(q=>q.answerCell);
+  check('原站点变量渲染函数将候选解析为真实文字',choice.options.map(o=>o.text).join('|')==='had no opinion|thought it took too long|thought the policy was fair');
+  check('扫描不点击、不打开菜单、不填写结论',clicks===0&&!doc.querySelector('.listContainer')&&D.connectCellText(cell)==='');
+  check('保留四个独立空位且均识别完整',questions.length===4&&questions.every(q=>!q.incomplete)&&questions.filter(q=>q.type==='numeric').length===3);
+  check('三个百分数原有值不被扫描更改',Array.from(frames[0].contentDocument.querySelectorAll('td.responseCell')).map(D.connectCellText).join('|')==='63.4|29.7|6.9');
+  const hash=choice.hash;
+  await run();
+  check('四个空分别求解成功',requests.length===4&&debug.state.stats.answered===4&&debug.state.stats.failed===0);
+  check('模型收到实际候选而非变量占位符',requests.every(request=>!JSON.stringify(request).includes('reactionFair')&&!JSON.stringify(request).includes('reactionLong')&&!JSON.stringify(request).includes('reactionNone')));
+  check('结论建议正确显示且不改变值',cell.querySelector('.__mas_select_hint')?.textContent==='建议：thought the policy was fair'&&D.connectCellText(cell)===''&&clicks===0);
+  check('渲染前后及高亮不破坏hash稳定性',D.collect().find(q=>q.answerCell).hash===hash);
+
+  // Actual menu text is rendered; click handling remains owned by the site.
+  cell.addEventListener('mousedown',()=>{
+    opens++;doc.querySelector('.listContainer')?.remove();cell.classList.add('jSheetCellActive');
+    const pool=doc.createElement('div');pool.className='listContainer';pool.style.cssText='position:absolute;left:376px;top:24px;background:white';
+    const menu=doc.createElement('ul');menu.setAttribute('role','listbox');menu.setAttribute('aria-labelledby',cell.id);pool.append(menu);
+    for(const value of raw){
+      const rendered=win.actInstance.models.Navigationcarousel.parseRandomVariables(win.actInstance.util.cellUtil.parseCellValue(value,true),true);
+      const item=doc.createElement('li');item.setAttribute('role','option');const text=doc.createElement('a');text.className='list_content';text.textContent=rendered;item.append(text);menu.append(item);
+      item.onclick=()=>{if(rendered){cell.textContent=rendered;saved.push(rendered);}pool.style.display='none';};
+    }doc.body.append(pool);
+  });
+  document.querySelector('.footer__link--next').onclick=()=>{next++;frames[0].contentDocument.querySelector('#jQuerySheet').remove();doc.querySelector('#jQuerySheet').remove();document.querySelector('.worksheet__main').insertAdjacentHTML('afterbegin','<fieldset><p>A new question after customer reaction inference.</p><label><input type="radio" name="new">Yes</label><label><input type="radio" name="new">No</label></fieldset>');};
+  settings.mode='select';await run();
+  check('自动选择点击渲染后的菜单项并保存正确文字',saved.join('|')==='thought the policy was fair'&&D.connectCellText(cell)==='thought the policy was fair'&&opens===1&&next===0);
+  check('候选显示文字与当前单元格hash一致',D.collect().find(q=>q.answerCell).hash===hash);
+  // Remove the visible menu so stale DOM cannot cover a failed runtime read.
+  doc.querySelector('.listContainer')?.remove();cell.textContent='';
+  raw=['','[missingFirst]','[missingSecond]'];await send('MCQ_SCAN');
+  choice=D.collect().find(q=>q.answerCell);
+  check('未解析的方括号变量明确标记不完整',choice.incomplete&&choice.issues.some(issue=>issue.includes('候选文字尚未解析'))&&choice.options.length===0);
+  const before=requests.length;await run();
+  check('未解析候选不会再发给模型猜测',requests.length===before+3&&D.connectCellText(cell)==='');
+  raw=['','~missingFirst~','~missingSecond~'];await send('MCQ_SCAN');
+  check('未解析波浪号变量不会作为undefined选项发送',D.collect().find(q=>q.answerCell).incomplete);
+  labels.zero=0;labels.one=1;raw=['','[zero]','[one]'];await send('MCQ_SCAN');
+  check('真实值为0的候选保留而非当作缺失变量',D.collect().find(q=>q.answerCell).options.map(o=>o.text).join('|')==='0|1'&&!D.collect().find(q=>q.answerCell).incomplete);
+  raw=['','&#91;reactionFair&#93;','[reactionLong]'];await send('MCQ_SCAN');
+  check('HTML实体编码的变量也能解析为实际候选',D.collect().find(q=>q.answerCell).options.some(o=>o.text==='thought the policy was fair'));
+  raw=['','[reactionFair]','[reactionLong]'];const instance=win.actInstance;win.actInstance={};await send('MCQ_SCAN');
+  check('渲染器未初始化时停止而非发送原始候选',D.collect().find(q=>q.answerCell).incomplete);
+  win.actInstance=instance;raw=['','~reactionFair~','[reactionLong]','[reactionNone]'];
+  settings.mode='submit';await run();
+  check('恢复渲染后完成结论并进入下一题',next===1&&D.collect()[0]?.stem==='A new question after customer reaction inference.'&&debug.state.stats.failed===0);
+ }catch(error){check('无测试异常: '+error.stack,false);debug.state.running=false;}
+ document.getElementById('verdict').innerHTML=checks.map(([name,ok])=>'<div class="'+(ok?'pass':'fail')+'">'+(ok?'PASS':'FAIL')+' — '+name+'</div>').join('');
+ document.getElementById('out').textContent=JSON.stringify({checks,requests:requests.length,clicks,opens,next,saved,stats:debug.state.stats},null,2);
+ window.__TEST_DONE__=true;
+});
+</script></html>

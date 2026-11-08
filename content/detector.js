@@ -5,7 +5,7 @@
  * Question = {
  *   hash: string,
  *   stem: string,
- *   type: 'single' | 'multi',
+ *   type: 'single' | 'multi' | 'numeric' | 'text',
  *   container: Element,
  *   options: [{ letter, text, input?, clickTarget }]
  * }
@@ -63,6 +63,80 @@
   const CANVAS_NUMERIC_QUESTION = '.question.numerical_question, .question.calculated_question';
   const CANVAS_MATCHING_QUESTION = '.question.matching_question';
   const VISUAL_SELECTOR = 'img, svg, canvas';
+  const CONNECT_FRAME = '.worksheet__main iframe.external[title="Assessment Tool iFrame"]';
+  const connectChoiceCache = new WeakMap();
+  const connectRuntimeChoices = new WeakMap();
+  const connectRuntimeIssues = new WeakMap();
+  let connectReadTask = null;
+
+  async function refreshConnectChoices() {
+    if (connectReadTask) return connectReadTask;
+    const frames = Array.from(document.querySelectorAll(CONNECT_FRAME)).filter(isVisible);
+    if (!frames.length) return;
+    connectReadTask = (async () => {
+      const targets = frames.map(frame => {
+        const doc = frame.contentDocument;
+        return {frame,doc,cells:new Set(doc?.querySelectorAll('#jQuerySheet td.responseCell') || []),token:crypto.randomUUID()};
+      });
+      targets.forEach(({frame,token}) => frame.setAttribute('data-mas-connect-target',token));
+      try {
+        const response = await new Promise(resolve => {
+          try {
+            chrome.runtime.sendMessage({type:'MCQ_CONNECT_CHOICES',payload:{targets:targets.map(({token})=>({token}))}}, reply =>
+              resolve(chrome.runtime.lastError ? null : reply));
+          } catch (_) { resolve(null); }
+        });
+        if (!response?.ok || !Array.isArray(response.frames)) return;
+        for (const {frame,doc:originalDocument,cells:originalCells,token} of targets) {
+          if (!frame.isConnected || frame.getAttribute('data-mas-connect-target') !== token) continue;
+          const record = response.frames.find(item => item.token === token);
+          try {
+            const doc = frame.contentDocument;
+            if (doc !== originalDocument) continue;
+            const cells = doc?.querySelectorAll('#jQuerySheet table.jSheet td.dropDownList.responseCell[dropdownid]') || [];
+            for (const cell of cells) {
+              connectRuntimeChoices.delete(cell);
+              connectRuntimeIssues.delete(cell);
+              if (!originalCells.has(cell)) continue;
+              const item = record?.cells?.find(item => item.id === cell.id && item.dropdownId === cell.getAttribute('dropdownid'));
+              if (item?.issue) connectRuntimeIssues.set(cell,String(item.issue));
+              if (item && Array.isArray(item.options) && item.options.every(value=>typeof value==='string')) {
+                connectRuntimeChoices.set(cell,item.options.map(norm).filter(Boolean).sort((a,b)=>a.localeCompare(b)));
+              }
+            }
+          } catch (_) {}
+        }
+      } finally {
+        targets.forEach(({frame,token}) => {if(frame.getAttribute('data-mas-connect-target')===token)frame.removeAttribute('data-mas-connect-target');});
+      }
+    })().finally(() => {connectReadTask=null;});
+    return connectReadTask;
+  }
+
+  function isDelegatedConnectFrame() {
+    try { return !!window.frameElement?.matches(CONNECT_FRAME) && !!window.parent.__MCQ_DETECTOR__ && !!document.querySelector('body.accountingtool_baseaccountingtool #jQuerySheet'); }
+    catch (_) { return false; }
+  }
+
+  function connectCellText(cell) {
+    const copy = cell.cloneNode(true);
+    copy.querySelectorAll('.__mas_select_hint').forEach(el => el.remove());
+    return norm(copy.textContent);
+  }
+
+  function connectMenuFor(cell, visibleOnly = false) {
+    return Array.from(cell.ownerDocument.querySelectorAll('.listContainer [role="listbox"]')).find(menu =>
+      (menu.getAttribute('aria-labelledby') || '').split(/\s+/).includes(cell.id) && (!visibleOnly || isVisible(menu)));
+  }
+
+  function connectSentence(cell) {
+    const row = cell.parentElement;
+    if (!row?.matches('tr') || !cell.classList.contains('aria-element')) return null;
+    const fields = Array.from(row.cells).filter(td => td.classList.contains('responseCell'));
+    const parts = Array.from(row.cells).map(td => fields.includes(td) ? '[Blank ' + (fields.indexOf(td)+1) + ']' : connectCellText(td));
+    if (!parts.some(part => part && !/^\[Blank \d+\]$/.test(part))) return null;
+    return {text:norm(parts.join(' ')),index:fields.indexOf(cell)+1};
+  }
 
   // 仅收集题目内容区域，不读取头像、导航、隐藏原文或评分反馈。
   function visualsIn(node) {
@@ -84,10 +158,23 @@
   }
 
   function attachVisuals(q) {
-    const stemNode = (q.groupContainer || q.container.closest('fieldset') || q.container).querySelector('.question_text, .question-area');
+    const probe = q.container.closest('avalon-probe-renderer');
+    const mcgrawPrompt = probe && q.container.closest('aa-air-item')?.querySelector('.prompt');
+    const stemNode = mcgrawPrompt || (q.groupContainer || q.container.closest('fieldset') || q.container).querySelector('.question_text, .question-area');
     const nodes = new Map();
     const add = (node, label) => visualsIn(node).forEach(el => { if (!nodes.has(el)) nodes.set(el, label); });
     add(stemNode || q.container, 'Question image');
+    // Connect 的图表在外层题干，作答格在同源 iframe；各小题必须携带共同图表。
+    if (q.connectPrompt) visualsIn(q.connectPrompt).forEach(el => {
+      if (el.closest('.worksheet__main') === q.connectPrompt &&
+          !el.closest('header,footer,nav,aside,[role="navigation"],.gaspar_audio__container,#goReactSpinner,.loading,.spinner') &&
+          !nodes.has(el)) nodes.set(el, 'Question image');
+    });
+    // McGraw Hill 将图表放在选项容器之外的左侧图片组件中。
+    // 仅关联当前 probe 的专用图片区，不能扩大到整页或相邻题目。
+    if (probe) probe.querySelectorAll('avalon-image-renderer').forEach(renderer => {
+      if (renderer.closest('avalon-probe-renderer') === probe) add(renderer, 'Question image');
+    });
     q.options.forEach(o => add(o.clickTarget, 'Option ' + o.letter + ' image'));
     q.visuals = Array.from(nodes, ([element, label]) => ({ element, label,
       source: element.currentSrc || element.src || '',
@@ -345,6 +432,7 @@
   function ariaGroups(root) {
     const out = [];
     root.querySelectorAll('[role="radiogroup"], [role="listbox"]').forEach((g) => {
+      if (g.closest('body.accountingtool_baseaccountingtool .listContainer')) return; // Connect 的共享菜单不是一道独立题。
       const opts = Array.from(g.querySelectorAll('[role="radio"], [role="option"]')).filter(isVisible);
       if (opts.length < 2) return;
       if (opts.some((o) => o.querySelector('input[type="radio"], input[type="checkbox"]'))) return; // 交给 inputGroups
@@ -461,6 +549,63 @@
     return questions;
   }
 
+  /** Connect Accounting Tool：一行一个自定义下拉单元格，共用浮动候选菜单。 */
+  function connectMatchingQuestions(root, includeReadOnly, instruction) {
+    const doc = root.nodeType === 9 ? root : root.ownerDocument;
+    const tables = root.querySelectorAll('body.accountingtool_baseaccountingtool #jQuerySheet table.jSheet');
+    return Array.from(tables).flatMap(table => {
+      let choices = connectChoiceCache.get(table);
+      if (!choices) connectChoiceCache.set(table, choices = new Map());
+      // 共用菜单即使关闭也保留实际候选，只按同一表内的 dropdownid 复用。
+      doc.querySelectorAll('.listContainer [role="listbox"][aria-labelledby]').forEach(menu => {
+        const owner = doc.getElementById((menu.getAttribute('aria-labelledby') || '').trim());
+        if (!owner || owner.closest('table.jSheet') !== table) return;
+        const labels = Array.from(menu.querySelectorAll('[role="option"]')).map(item => norm(item.querySelector('.list_content')?.textContent || '')).filter(Boolean).sort((a,b)=>a.localeCompare(b));
+        if (labels.length) choices.set(owner.getAttribute('dropdownid'), labels);
+      });
+      return Array.from(table.querySelectorAll('td.responseCell')).filter(isVisible).flatMap((cell, index) => {
+        const readOnly = cell.classList.contains('td-readOnly') || cell.getAttribute('aria-disabled') === 'true' || cell.getAttribute('aria-readonly') === 'true';
+        if (readOnly && !includeReadOnly) return [];
+        const headers = (cell.getAttribute('headers') || '').trim().split(/\s+/).map(id => doc.getElementById(id)).filter(node => node && table.contains(node));
+        const description = headers.map(text).join(' ');
+        const sentence = !description ? connectSentence(cell) : null;
+        const dropdown = cell.classList.contains('dropDownList');
+        const labels = connectRuntimeChoices.get(cell) || choices.get(cell.getAttribute('dropdownid')) || [];
+        const issues = [];
+        if (!instruction || (!description && !sentence)) issues.push('缺少共同题干或该行标签');
+        if (dropdown) {
+          if (cell.getAttribute('dropdowntype') !== 'dropDown') issues.push('暂不支持该类型的表格下拉框');
+          if (connectRuntimeIssues.has(cell)) issues.push(connectRuntimeIssues.get(cell));
+          if (labels.length < 2) issues.push('候选数据尚未就绪，请稍后重新扫描');
+          if (new Set(labels).size !== labels.length) issues.push('候选文字重复，无法唯一选择');
+        } else if (!cell.classList.contains('isN')) issues.push('暂不支持该类型的表格填写单元格');
+        let stem = (instruction || '[共同题干缺失]') + (sentence
+          ? '\nComplete this sentence: ' + sentence.text + '\nAnswer ONLY [Blank ' + sentence.index + '].'
+          : '\nMatch ONLY this row: ' + (description || '[行标签缺失]'));
+        if (!dropdown && connectCellText(cell.nextElementSibling || cell).startsWith('%')) stem += '\nThe percent sign is already printed after the blank. Return the percentage number without a percent sign.';
+        return [{
+          hash: hashOf(stem + (dropdown ? '::connect-matching-v1::' + cell.getAttribute('dropdownid') + '::' + labels.join('||') : '::connect-numeric-v1')),
+          stem, type:dropdown?'single':'numeric', kind:dropdown?'matching':'connect-numeric', matchingRow:index+1, container:cell, groupContainer:table,
+          ...(dropdown?{answerCell:cell}:{answerNumberCell:cell,answerInput:null}), readOnly, incomplete:issues.length>0, issues,
+          options:dropdown?labels.map((label,i) => ({letter:LETTERS[i] || String(i+1),text:label,raw:label,value:label,input:null,clickTarget:cell,connectCell:cell})):[]
+        }];
+      });
+    });
+  }
+
+  function connectFrameQuestions(root, includeReadOnly) {
+    return Array.from(root.querySelectorAll(CONNECT_FRAME)).flatMap(frame => {
+      try {
+        const doc = frame.contentDocument;
+        if (!doc || !isVisible(frame)) return [];
+        const prompt = frame.closest('.worksheet__main');
+        const copy = prompt.cloneNode(true);
+        copy.querySelectorAll('iframe, .gaspar_audio__container, .t-hidden, [aria-hidden="true"], .__mas_select_hint').forEach(el => el.remove());
+        return connectMatchingQuestions(doc, includeReadOnly, norm(copy.textContent)).map(q => ({...q, connectPrompt:prompt}));
+      } catch (_) { return []; }
+    });
+  }
+
   /** Canvas 数字题只有一个文本/数字输入框，结果页中的答案列表是反馈，不是选项。 */
   function canvasNumericQuestions(root, includeReadOnly) {
     const questions = [];
@@ -489,6 +634,40 @@
       });
     });
     return questions;
+  }
+
+  /** McGraw Hill 将文本空位直接嵌在 .prompt 中；空位位置必须进入题干。 */
+  function mcgrawTextQuestions(root, includeReadOnly) {
+    return Array.from(root.querySelectorAll('awd-probe .awd-probe-type-fill_in_the_blank .fitb-fieldset')).flatMap(container => {
+      const prompt = container.querySelector('.prompt');
+      if (!isVisible(container) || !isVisible(prompt)) return [];
+      const allInputs = Array.from(prompt.querySelectorAll('input.fitb-input'));
+      const answerInputs = allInputs.filter(input => isVisible(input) && !input.closest('[aria-hidden="true"]'));
+      if (!answerInputs.length) return [];
+      const readOnly = answerInputs.some(input => input.disabled || input.readOnly || input.getAttribute('aria-disabled') === 'true');
+      if (readOnly && !includeReadOnly) return [];
+      const copy = prompt.cloneNode(true);
+      const clonedInputs = Array.from(copy.querySelectorAll('input.fitb-input'));
+      clonedInputs.forEach((input, index) => {
+        const blank = answerInputs.indexOf(allInputs[index]);
+        input.replaceWith(blank >= 0 ? ' [Blank ' + (blank + 1) + '] ' : '');
+      });
+      copy.querySelectorAll('._visuallyHidden, [hidden], [aria-hidden="true"], [role="status"], .__mas_select_hint').forEach(el => el.remove());
+      const stem = norm(copy.textContent);
+      const blanks = answerInputs.map((input, index) => ({
+        index: index + 1, label: norm(input.getAttribute('aria-label')) || 'Blank ' + (index + 1),
+        maxLength: input.maxLength >= 0 ? input.maxLength : null
+      }));
+      const issues = [];
+      if (answerInputs.some(input => input.type !== 'text')) issues.push('填空含非文本输入框，暂不自动填写');
+      if (answerInputs.length > 30) issues.push('填空数量超过30，暂不自动填写');
+      if (!stem.replace(/\[Blank \d+\]/g, '').trim()) issues.push('填空题缺少题干');
+      return [{
+        hash: hashOf(stem + '::text-v1::' + JSON.stringify(blanks)), stem, type: 'text',
+        container, answerInputs, blanks, options: [], readOnly,
+        incomplete: issues.length > 0, issues
+      }];
+    });
   }
 
   /** Canvas Classic 把题干放在独立 .question_text 中，不能从包含分数/反馈的整块区域取文字。 */
@@ -526,8 +705,10 @@
 
   function collect(root, opts) {
     root = root || document;
+    // 同源 Connect 由外层统一读取和作答，避免 iframe 的第二套求解器重复执行。
+    if (root === document && isDelegatedConnectFrame()) return [];
     const raw = [].concat(inputGroups(root, !!(opts && opts.includeReadOnly)), ariaGroups(root), letteredGroups(root));
-    const questions = [].concat(canvasNumericQuestions(root, !!(opts && opts.includeReadOnly)), canvasMatchingQuestions(root, !!(opts && opts.includeReadOnly)), sageMatchingQuestions(root, !!(opts && opts.includeReadOnly)));
+    const questions = [].concat(connectFrameQuestions(root, !!opts?.includeReadOnly), mcgrawTextQuestions(root, !!(opts && opts.includeReadOnly)), canvasNumericQuestions(root, !!(opts && opts.includeReadOnly)), canvasMatchingQuestions(root, !!(opts && opts.includeReadOnly)), sageMatchingQuestions(root, !!(opts && opts.includeReadOnly)));
     const usedContainers = new Set();
 
     for (const g of raw) {
@@ -570,15 +751,34 @@
       });
     }
 
-    // 按在页面中出现的先后排序
+    // iframe 中的节点属于不同 document，直接 compareDocumentPosition 会返回
+    // DISCONNECTED 和实现相关的顺序。先比较外层 iframe，再比较内部控件。
+    const paths=new Map(questions.map(q=>{
+      let node=q.answerSelect||q.answerCell||q.answerNumberCell||q.answerInput||q.container;
+      const path=[node];
+      try{
+        while(node.ownerDocument!==document){
+          const frame=node.ownerDocument.defaultView?.frameElement;
+          if(!frame)break;
+          path.unshift(frame);node=frame;
+        }
+      }catch(_){}
+      return [q,path];
+    }));
     questions.sort((a, b) => {
-      const p = a.container.compareDocumentPosition(b.container);
-      if (p & Node.DOCUMENT_POSITION_FOLLOWING) return -1;
-      if (p & Node.DOCUMENT_POSITION_PRECEDING) return 1;
+      const left=paths.get(a),right=paths.get(b);
+      for(let i=0;i<Math.min(left.length,right.length);i++){
+        if(left[i]===right[i])continue;
+        const p=left[i].compareDocumentPosition(right[i]);
+        if(p&Node.DOCUMENT_POSITION_DISCONNECTED)return 0;
+        if(p&Node.DOCUMENT_POSITION_FOLLOWING)return -1;
+        if(p&Node.DOCUMENT_POSITION_PRECEDING)return 1;
+        break;
+      }
       return 0;
     });
     return questions.map(attachVisuals);
   }
 
-  window.__MCQ_DETECTOR__ = { collect, text, norm, isVisible, LETTERS };
+  window.__MCQ_DETECTOR__ = { collect, text, norm, isVisible, LETTERS, connectCellText, connectMenuFor, isDelegatedConnectFrame, refreshConnectChoices };
 })();

@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="zh-CN"><meta charset="utf-8"><title>McGraw Hill confidence submission</title>
+<style>
+body {font:14px/1.5 sans-serif;margin:24px} label {display:block}
+awd-probe, awd-navigation-bar, awd-confidence-buttons {display:block}
+._visuallyHidden {position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)}
+.pass {color:green} .fail {color:red}
+</style>
+<div id="verdict">运行中…</div><pre id="out"></pre><main id="page"></main>
+<script>
+const listeners = [], requests = [], clicks = [];
+const settings = {apiKey:'fake', mode:'submit', actionDelay:5, submitDelay:5, pageTimeout:1800, maxRounds:1};
+window.chrome = {
+  runtime: {
+    onMessage: {addListener:fn => listeners.push(fn)},
+    sendMessage(msg, callback) {
+      let reply = {ok:true};
+      if (msg.type === 'MCQ_SOLVE') {
+        requests.push(msg.payload);
+        reply = {ok:true, letters:['A','B','D'], confidence:0.9, reason:'local stub'};
+      }
+      if (callback) callback(reply);
+      return Promise.resolve(reply);
+    }
+  },
+  storage: {local:{get:async () => ({mcqSettings:settings})}}
+};
+const send = type => new Promise(resolve => listeners[0]({type}, {}, resolve));
+const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+</script>
+<script src="../content/detector.js"></script><script src="../content/solver.js"></script>
+<script>
+(async () => {
+  const checks = [], check = (name, ok) => checks.push([name, !!ok]);
+  const D = window.__MCQ_DETECTOR__, debug = window.__MCQ_DEBUG__, page = document.getElementById('page');
+  try {
+    const fixture = await (await fetch('./mcgraw-confidence-fixture.html')).text();
+    const render = () => {page.innerHTML = fixture; debug.state.done.clear();};
+    const confidence = level => page.querySelector('[data-automation-id="confidence-buttons--'+level+'_confidence"]');
+    const markDone = () => D.collect().forEach(q => debug.state.done.add(q.hash));
+    const waitStopped = async () => {await sleep(30); for (let i=0;i<150 && debug.state.running;i++) await sleep(100);};
+    render();
+    const qs = D.collect(), q = qs[0];
+    check('附件结构识别为一道四选项多选题', qs.length === 1 && q.type === 'multi' && q.options.length === 4);
+    check('提取完整题干与选项', q.stem === 'Identify all of the following items which are qualitative variables.' && q.options[3].text === 'The species of trees in a park.');
+    let btn = debug.findAdvanceButton(q.container);
+    check('扫描定位默认 Medium 提交入口', btn?.el === confidence('medium'));
+    check('附件禁用按钮仍可识别但不可点击', btn && debug.isDisabled(btn.el) && clicks.length === 0);
+    check('无题目锚点时也能定位', debug.findAdvanceButton(null)?.el === confidence('medium'));
+    const navigation = page.querySelector('awd-navigation-bar'), footer = document.createElement('footer');
+    navigation.replaceWith(footer); footer.append(navigation);
+    check('底部提交区不被导航过滤误排除', debug.findAdvanceButton(q.container, {excludeChrome:true})?.el === confidence('medium'));
+    page.insertAdjacentHTML('afterbegin', '<nav><button>Next</button><button>Exit Assignment</button></nav>');
+    check('本题置信度提交优先于页首 Next', debug.findAdvanceButton(q.container)?.el === confidence('medium'));
+    check('置信度提交不会被当成 Get Started', !debug.findAdvanceButton(null, {onlyStart:true}));
+    await send('MCQ_SCAN');
+    check('扫描面板显示 Medium', document.getElementById('__mcq_panel_host').shadowRoot.querySelector('.meta').textContent.includes('Medium'));
+
+    // 同名按钮、相似 class / automation id 出现在提交组件外时，均不得作为提交入口。
+    page.innerHTML = '<button>High</button><button class="btn-confidence">Medium</button><button aria-label="Low Confidence">Low</button><button data-automation-id="confidence-buttons--medium_confidence">Medium</button>';
+    check('普通网页上的置信度文字不会误匹配', !debug.findAdvanceButton(null));
+    render();
+    const region = page.querySelector('awd-confidence-buttons');
+    region.insertAdjacentHTML('beforeend', '<button data-automation-id="confidence-buttons--other_confidence">Other</button>');
+    confidence('medium').hidden = true;
+    check('默认按钮隐藏时识别其它真实置信度按钮', debug.findAdvanceButton(null)?.el === confidence('high'));
+    confidence('high').hidden = true;
+    check('只显示 Low 时仍能识别', debug.findAdvanceButton(null)?.el === confidence('low'));
+    confidence('low').hidden = true;
+    check('未知置信度属性不作提交入口', !debug.findAdvanceButton(null));
+
+    // 禁用保持到等待中，模拟站点异步解锁；不允许重复点击其它置信度。
+    render(); markDone();
+    const medium = confidence('medium');
+    medium.addEventListener('click', () => {
+      clicks.push('medium');
+      page.innerHTML = '<fieldset><p>A newly loaded question after confidence submission.</p><label><input type="radio" name="new">Yes</label><label><input type="radio" name="new">No</label></fieldset>';
+    });
+    debug.state.running = true;
+    setTimeout(() => {medium.disabled = false;}, 450);
+    const advanced = await debug.advance(D.collect()[0].container);
+    debug.state.running = false;
+    check('等待解锁后只点击一次 Medium 并发现新题', clicks.join(',') === 'medium' && advanced.ok && advanced.questions?.length === 1);
+    check('推进没有等题超时', debug.state.stats.timeouts === 0);
+
+    render(); markDone(); debug.state.running = true;
+    const blocked = await debug.advance(D.collect()[0].container);
+    debug.state.running = false;
+    check('一直禁用时停止且不强行移除 disabled', !blocked.ok && blocked.reason.includes('禁用') && confidence('medium').disabled && clicks.length === 1);
+
+    // 完整求解流程：先选中，再由站点 change 解锁按钮，最后提交。
+    render();
+    page.addEventListener('change', () => {
+      page.querySelectorAll('.btn-confidence').forEach(el => {el.disabled=false;});
+    });
+    page.querySelectorAll('.btn-confidence').forEach(el => el.addEventListener('click', () => {
+      clicks.push(el.textContent.trim());
+      check('提交时多选状态已校验', [...page.querySelectorAll('input[type=checkbox]')].map(el => el.checked).join(',') === 'true,true,false,true');
+      page.innerHTML = '<p>Answer submitted.</p>';
+    }));
+    await send('MCQ_START'); await waitStopped();
+    check('完整流程调用一次模型并选择 Medium 提交一次', requests.length === 1 && clicks.join(',') === 'medium,Medium' && debug.state.stats.answered === 1);
+
+    render(); settings.mode = 'select';
+    confidence('medium').addEventListener('click', () => clicks.push('unexpected'));
+    await send('MCQ_START'); await waitStopped();
+    check('仅选中模式保持不提交', page.querySelectorAll('input:checked').length === 3 && clicks.length === 2);
+    render(); settings.mode = 'highlight';
+    await send('MCQ_START'); await waitStopped();
+    check('高亮模式不选择、不提交', page.querySelectorAll('input:checked').length === 0 && clicks.length === 2);
+  } catch(error) {check('无测试异常: '+error.stack, false); debug.state.running=false;}
+  document.getElementById('verdict').innerHTML = checks.map(([name,ok])=>'<div class="'+(ok?'pass':'fail')+'">'+(ok?'PASS':'FAIL')+' — '+name+'</div>').join('');
+  document.getElementById('out').textContent = JSON.stringify({checks, requests:requests.length, clicks},null,2);
+  window.__TEST_DONE__ = true;
+})();
+</script></html>

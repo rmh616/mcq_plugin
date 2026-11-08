@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "mas",
-  "version": "1.12.0",
-  "description": "识别网页选择题、图表图片题、Canvas / Sage 下拉匹配及数字填空，调用兼容的图文接口给出答案，并可选中 / 填写 / 提交。",
+  "version": "1.14.6",
+  "description": "识别网页选择题、图表图片题、McGraw Hill 填空、Connect 表格下拉和数字题、Canvas / Sage 匹配，可高亮 / 选中 / 填写 / 提交。",
   "permissions": ["storage", "activeTab", "scripting"],
   "host_permissions": ["<all_urls>"],
   "background": {

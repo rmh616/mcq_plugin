@@ -40,7 +40,7 @@
   };
 
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-  const MODE_NAME = { highlight: '仅高亮', select: '自动选中', submit: '自动选中并提交' };
+  const MODE_NAME = { highlight: '仅高亮', select: '自动选中 / 填写', submit: '自动选中 / 填写并提交' };
 
   // 答案标记留在元素上，仅在按住 Ctrl + Alt + P 时启用样式。
   // 不存入会话：刷新后的页面始终从隐藏状态开始。
@@ -66,6 +66,7 @@
   const pickIds = new WeakMap();
   let pickSeq = 0;
   const answerRequests = new Map();
+  let connectChoiceQueue = Promise.resolve();
   const onePickCompleted = new Map();
   const onePickStatus = { phase: 'idle', hash: '', letter: '', error: '', checked: 0, corrected: 0, failed: 0 };
   const CANVAS_CACHE_SELECTOR = '.question.multiple_choice_question, .question.multiple_answers_question, .question.true_false_question, .question.numerical_question, .question.calculated_question, .question.matching_question';
@@ -113,7 +114,7 @@
   function collectEfficiently(opts) {
     invalidateCanvas(canvasObserver.takeRecords());
     const containers = Array.from(document.querySelectorAll(CANVAS_CACHE_SELECTOR));
-    if (!containers.length || document.querySelector('.question-area[id^="matchingType"]')) {
+    if (!containers.length || document.querySelector('.question-area[id^="matchingType"], awd-probe .awd-probe-type-fill_in_the_blank, .worksheet__main iframe.external[title="Assessment Tool iFrame"]')) {
       canvasCache.clear(); dirtyCanvas.clear();
       scanStats.fullScans++;
       return D.collect(document, opts);
@@ -155,7 +156,7 @@
   }
 
   function pickableMcq(q) {
-    return !q.readOnly && !q.incomplete && (!q.answerSelect || q.container.matches('.question.matching_question')) &&
+    return !q.readOnly && !q.incomplete && !q.answerCell && (!q.answerSelect || q.container.matches('.question.matching_question')) &&
       (q.type === 'single' || q.type === 'multi') && q.options.length >= 2;
   }
 
@@ -307,7 +308,7 @@
   }
 
   function disclosedReviewAnswer(q) {
-    if (!q.readOnly || q.type === 'numeric') return null;
+    if (!q.readOnly || q.type === 'numeric' || q.type === 'text') return null;
     const letters = q.options.filter(o => {
       const row = o.clickTarget.closest('.answer');
       return row && q.container.contains(row) && row.classList.contains('correct_answer');
@@ -343,9 +344,13 @@
   }
 
   // 快捷键独立于自动选中/提交流程；不建立续跑会话、不写答案、不显示日志窗口。
-  function prepareHighlights() {
+  async function prepareHighlights() {
+    if (D.isDelegatedConnectFrame?.()) return Promise.resolve();
     setPanelHidden(true);
     if (state.running) stop('切换到快捷键高亮', true);
+    const refreshEpoch = highlightEpoch;
+    await D.refreshConnectChoices?.();
+    if (refreshEpoch !== highlightEpoch) return;
     const questions = collectEfficiently({ includeReadOnly: true }).filter(q => !q.incomplete);
     const snapshot = questions.map(q => q.hash).join('|');
     if (highlightTask) {
@@ -379,9 +384,9 @@
             }
             const res = q.readOnly ? disclosedReviewAnswer(q) : highlightAnswers.get(q.hash) || await ask(q);
             if (epoch !== highlightEpoch) return;
-            const valid = res.ok && (q.type === 'numeric'
+            const valid = res.ok && (q.type === 'text' ? textValues(q, res.values) !== null : q.type === 'numeric'
               ? numericValue(res.value) !== null
-              : Array.isArray(res.letters) && res.letters.length > 0 && (!q.answerSelect || res.letters.length === 1) && res.letters.every(letter => q.options.some(o => o.letter === letter && !o.unavailable)));
+              : Array.isArray(res.letters) && res.letters.length > 0 && (!(q.answerSelect || q.answerCell) || res.letters.length === 1) && res.letters.every(letter => q.options.some(o => o.letter === letter && !o.unavailable)));
             if (!valid) {
               highlightStatus.error = res.error || '模型没有给出可用答案';
               continue;
@@ -393,7 +398,7 @@
             // 回顾页使用当前 DOM 公布的答案，避免同题状态改变后套用旧模型答案。
             const answer = current.readOnly ? disclosedReviewAnswer(current) : res;
             clearMarks(current);
-            mark(current, answer.letters || [], typeof answer.confidence === 'number' && answer.confidence < 0.5);
+            mark(current, answer.letters || [], typeof answer.confidence === 'number' && answer.confidence < 0.5, answer.values, answer.value);
             highlightStatus.answered++;
           } catch (error) {
             highlightStatus.error = String(error.message || error);
@@ -596,33 +601,63 @@
   // ---------------- 高亮与点击 ----------------
 
   function clearMarks(q) {
-    if (q.answerSelect) {
-      q.answerSelect.classList.remove('__mcq_pick', '__mcq_pick_warn', '__mcq_scan');
-      selectHints.get(q.answerSelect)?.remove();
-      selectHints.delete(q.answerSelect);
+    if (q.type === 'text') {
+      q.answerInputs.forEach(input => {
+        input.classList.remove('__mcq_pick', '__mcq_pick_warn', '__mcq_scan');
+        selectHints.get(input)?.remove();
+        selectHints.delete(input);
+      });
+      return;
+    }
+    if (q.answerSelect || q.answerCell) {
+      const control = q.answerSelect || q.answerCell;
+      control.classList.remove('__mcq_pick', '__mcq_pick_warn', '__mcq_scan');
+      selectHints.get(control)?.remove();
+      selectHints.delete(control);
       return;
     }
     if (q.type === 'numeric') {
-      if (q.answerInput) q.answerInput.classList.remove('__mcq_pick', '__mcq_pick_warn', '__mcq_scan');
+      const control = q.answerNumberCell || q.answerInput;
+      if (control) {control.classList.remove('__mcq_pick', '__mcq_pick_warn', '__mcq_scan');selectHints.get(control)?.remove();selectHints.delete(control);}
       return;
     }
     q.options.forEach((o) => o.clickTarget.classList.remove('__mcq_pick', '__mcq_pick_warn', '__mcq_scan'));
   }
 
-  function mark(q, letters, lowConf) {
-    if (q.answerSelect) {
+  function mark(q, letters, lowConf, values, value) {
+    if (q.type === 'text') {
+      const answers = textValues(q, values);
+      if (!answers) return;
+      q.answerInputs.forEach((input, index) => {
+        input.classList.add(lowConf ? '__mcq_pick_warn' : '__mcq_pick');
+        const hint = document.createElement('span');
+        hint.className = '__mas_select_hint' + (lowConf ? ' __mas_select_hint_warn' : '');
+        hint.textContent = '建议：' + answers[index];
+        input.insertAdjacentElement('afterend', hint);
+        selectHints.set(input, hint);
+      });
+      return;
+    }
+    if (q.answerSelect || q.answerCell) {
       const option = q.options.find(o => o.letter === letters[0]);
       if (!option) return;
-      q.answerSelect.classList.add(lowConf ? '__mcq_pick_warn' : '__mcq_pick');
+      const control = q.answerSelect || q.answerCell;
+      control.classList.add(lowConf ? '__mcq_pick_warn' : '__mcq_pick');
       const hint = document.createElement('span');
       hint.className = '__mas_select_hint' + (lowConf ? ' __mas_select_hint_warn' : '');
       hint.textContent = '建议：' + option.text;
-      q.answerSelect.insertAdjacentElement('afterend', hint);
-      selectHints.set(q.answerSelect, hint);
+      if (q.answerCell) control.append(hint); // span 只能放在单元格内，不能插入 tr 中破坏表格布局。
+      else control.insertAdjacentElement('afterend', hint);
+      selectHints.set(control, hint);
       return;
     }
     if (q.type === 'numeric') {
-      if (q.answerInput) q.answerInput.classList.add(lowConf ? '__mcq_pick_warn' : '__mcq_pick');
+      const control = q.answerNumberCell || q.answerInput;
+      if (control) control.classList.add(lowConf ? '__mcq_pick_warn' : '__mcq_pick');
+      if (q.answerNumberCell && numericValue(value) !== null) {
+        const hint = document.createElement('span');hint.className='__mas_select_hint' + (lowConf?' __mas_select_hint_warn':'');
+        hint.textContent='建议：'+numericValue(value);control.append(hint);selectHints.set(control,hint);
+      }
       return;
     }
     q.options.forEach((o) => {
@@ -650,7 +685,25 @@
     return String(Number(str));
   }
 
+  function connectNumericText(cell) {
+    const copy=cell.cloneNode(true);
+    copy.querySelectorAll('.__mas_select_hint, .currencySymbol').forEach(el=>el.remove());
+    let text=D.norm(copy.textContent).replace(/\u2212/g,'-');
+    // 只在读取 Connect 数字单元格的显示值时剥离格式；模型回复仍用严格数字协议。
+    text=text.replace(/^([+-]?)\s*[$€£¥₹]\s*/,'$1').replace(/\s*[$€£¥₹%]$/,'').trim();
+    if(/^\(.*\)$/.test(text))text='-'+text.slice(1,-1).trim().replace(/^[$€£¥₹]\s*/,'');
+    if(/^[+-]?\d{1,3}(?:,\d{3})+(?:\.\d*)?(?:e[+-]?\d+)?$/i.test(text))text=text.replace(/,/g,'');
+    return numericValue(text)??text;
+  }
+
+  const connectNumericValue=cell=>numericValue(connectNumericText(cell));
+
   async function applyNumericAnswer(q, value) {
+    if (q.answerNumberCell) {
+      const task = connectChoiceQueue.then(() => applyConnectNumericAnswer(q,value));
+      connectChoiceQueue = task.catch(() => {});
+      return task;
+    }
     const input = q.answerInput;
     const answer = numericValue(value);
     if (!input || !input.isConnected || isDisabled(input) || input.readOnly || answer === null) return false;
@@ -667,11 +720,54 @@
     return input.isConnected && numericValue(input.value) === answer && input.checkValidity();
   }
 
+  function textValues(q, values) {
+    if (!Array.isArray(values) || values.length !== q.answerInputs.length) return null;
+    const answers = values.map(value => typeof value === 'string' ? value.trim() : null);
+    return answers.every((answer, index) => answer && answer.length <= 4096 && !/[\u0000-\u001f\u007f]/.test(answer) &&
+      (q.answerInputs[index].maxLength < 0 || answer.length <= q.answerInputs[index].maxLength)) ? answers : null;
+  }
+
+  function textAnswerMatches(q, values) {
+    const answers = textValues(q, values), current = liveQuestion(q);
+    return !!answers && !!current && !current.readOnly && !current.incomplete &&
+      current.answerInputs?.length === q.answerInputs.length && current.answerInputs.every((input, index) =>
+        input === q.answerInputs[index] && !isDisabled(input) && !input.readOnly && input.value === answers[index] && input.checkValidity());
+  }
+
+  async function applyTextAnswer(q, values) {
+    const answers = textValues(q, values);
+    const stillCurrent = () => {
+      const current = liveQuestion(q);
+      return state.running && current && !current.readOnly && !current.incomplete &&
+        current.answerInputs?.length === q.answerInputs.length &&
+        current.answerInputs.every((input, index) => input === q.answerInputs[index] && !isDisabled(input) && !input.readOnly);
+    };
+    if (!answers || !stillCurrent()) return false;
+    // 先检查全部答案及原生限制，避免第二空明显无效时先写入第一空。
+    if (!q.answerInputs.every((input, index) => {
+      const copy = input.cloneNode(); copy.value = answers[index]; return copy.checkValidity();
+    })) return false;
+    try { q.answerInputs[0].scrollIntoView({ block: 'center', behavior: 'smooth' }); } catch (_) {}
+    for (let index = 0; index < answers.length; index++) {
+      if (!stillCurrent()) return false;
+      const input = q.answerInputs[index];
+      input.focus();
+      if (!stillCurrent()) return false;
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, answers[index]);
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      if (!stillCurrent()) return false;
+      input.dispatchEvent(new Event('change', { bubbles: true }));
+      input.blur();
+      await sleep(Math.max(50, state.settings.actionDelay / 2));
+    }
+    return state.running && textAnswerMatches(q, answers);
+  }
+
   function realClick(el) {
     const r = el.getBoundingClientRect();
     const x = r.left + r.width / 2;
     const y = r.top + r.height / 2;
-    const base = { bubbles: true, cancelable: true, composed: true, clientX: x, clientY: y, view: window };
+    const base = { bubbles: true, cancelable: true, composed: true, clientX: x, clientY: y, view: el.ownerDocument.defaultView || window };
     try {
       el.dispatchEvent(new PointerEvent('pointerdown', { ...base, pointerId: 1, isPrimary: true }));
     } catch (_) {}
@@ -687,6 +783,7 @@
 
   /** 返回 true / false / null（null = 这个控件看不出选中状态） */
   function isSelected(opt) {
+    if (opt.connectCell) return D.connectCellText(opt.connectCell) === opt.value;
     if (opt.selectOption) return opt.clickTarget.value === opt.value;
     if (opt.input) return !!opt.input.checked;
     const t = opt.clickTarget;
@@ -732,6 +829,11 @@
 
   /** 点选答案并校验；必要时重试一次。返回 true/false/null */
   async function applyAnswer(q, letters) {
+    if (q.answerCell) {
+      const task = connectChoiceQueue.then(() => applyConnectAnswer(q, letters));
+      connectChoiceQueue = task.catch(() => {});
+      return task;
+    }
     if (q.answerSelect) {
       const select = q.answerSelect;
       const option = letters.length === 1 && q.options.find(o => o.letter === letters[0]);
@@ -765,6 +867,68 @@
       ok = verifySelection(q, letters);
     }
     return ok;
+  }
+
+  async function applyConnectAnswer(q, letters) {
+    const cell = q.answerCell, doc = cell.ownerDocument;
+    const option = letters.length === 1 && q.options.find(o => o.letter === letters[0]);
+    const current = () => state.running && cell.isConnected && liveQuestion(q)?.answerCell === cell &&
+      !cell.classList.contains('td-readOnly') && cell.getAttribute('aria-disabled') !== 'true' && cell.getAttribute('aria-readonly') !== 'true';
+    if (!option || !current()) return false;
+    selectHints.get(cell)?.remove();
+    selectHints.delete(cell);
+    if (D.connectCellText(cell) === option.value) return true;
+    cell.focus();
+    realClick(cell);
+    let menu = null;
+    for (let attempt=0; attempt<20 && current(); attempt++) {
+      menu = D.connectMenuFor(cell, true);
+      if (menu) break;
+      // 站点先激活单元格，再用浮动的 Show All Items 按钮打开共用菜单。
+      if (attempt === 3 && cell.classList.contains('jSheetCellActive')) {
+        const buttons = Array.from(doc.querySelectorAll('input.dropdownButton[title="Show All Items"]')).filter(D.isVisible);
+        if (buttons.length === 1) realClick(buttons[0]);
+      }
+      await sleep(50);
+    }
+    if (!menu || !current()) return false;
+    const items = Array.from(menu.querySelectorAll('[role="option"]')).filter(item => D.isVisible(item) &&
+      !item.classList.contains('li_disabled') && item.getAttribute('aria-disabled') !== 'true');
+    const matches = items.filter(item => D.norm(item.querySelector('.list_content')?.textContent || '') === option.value);
+    if (matches.length !== 1 || D.connectMenuFor(cell,true) !== menu) return false;
+    realClick(matches[0]); // 让站点自身 click 处理器更新数据和自动保存，不改 td.textContent。
+    await sleep(Math.max(50,state.settings.actionDelay/2));
+    return current() && D.connectCellText(cell) === option.value;
+  }
+
+  async function applyConnectNumericAnswer(q, value) {
+    const cell=q.answerNumberCell,doc=cell.ownerDocument,win=doc.defaultView,answer=numericValue(value);
+    const current=()=>state.running&&cell.isConnected&&!isDisabled(cell)&&!cell.classList.contains('td-readOnly')&&cell.getAttribute('aria-readonly')!=='true'&&liveQuestion(q)?.answerNumberCell===cell;
+    if(answer===null||!current())return false;
+    selectHints.get(cell)?.remove();selectHints.delete(cell);
+    if(connectNumericValue(cell)===answer)return true;
+    cell.focus();realClick(cell);
+    cell.dispatchEvent(new win.MouseEvent('dblclick',{bubbles:true,cancelable:true,view:win}));
+    let editor;
+    for(let attempt=0;attempt<20&&current();attempt++){
+      const editors=Array.from(doc.querySelectorAll('textarea.jSheetInPlaceEdit')).filter(D.isVisible);
+      if(editors.length===1&&cell.classList.contains('jSheetCellActive')){editor=editors[0];break;}
+      await sleep(50);
+    }
+    if(!editor||!current()||editor.disabled||editor.readOnly)return false;
+    editor.focus();
+    Object.getOwnPropertyDescriptor(win.HTMLTextAreaElement.prototype,'value').set.call(editor,answer);
+    editor.dispatchEvent(new win.Event('input',{bubbles:true}));
+    editor.dispatchEvent(new win.Event('change',{bubbles:true}));
+    if(!current())return false;
+    editor.dispatchEvent(new win.KeyboardEvent('keydown',{key:'Enter',code:'Enter',keyCode:13,which:13,bubbles:true,cancelable:true}));
+    if(editor.isConnected)editor.blur();
+    const started=performance.now();
+    while(current()&&performance.now()-started<1500){
+      if(connectNumericValue(cell)===answer)return true;
+      await sleep(50);
+    }
+    return false;
   }
 
   // ---------------- 提交 / 下一题 ----------------
@@ -818,6 +982,11 @@
     return child || el;
   }
 
+  function isMcgrawNextButton(el, label) {
+    return el.matches('button') && !!el.closest('awd-navigation-bar awd-question-button-bar') &&
+      /^next\s+question$/i.test(label || D.norm(el.innerText || el.getAttribute('aria-label') || ''));
+  }
+
   /**
    * anchor = 当前题目的容器。一页一题时，题目正下方最近的那颗按钮几乎必然是目标，
    * 所以位置权重给得比较重，能把页头页脚的 "Next" 之类干扰项压下去。
@@ -826,6 +995,7 @@
     const { excludeChrome = false, minScore = 1, onlyStart = false } = opts || {};
     const scored = [];
     const seen = new Set();
+    const connectHost = !!document.querySelector('.worksheet__main iframe.external[title="Assessment Tool iFrame"]');
     for (const rawEl of document.querySelectorAll(BTN_SELECTOR)) {
       const el = clickableElement(rawEl);
       if (seen.has(el)) continue;
@@ -837,6 +1007,7 @@
       const label = D.norm(el.innerText || el.value || el.getAttribute('aria-label') || el.title || '');
       if (!label || label.length > 30) continue;
       if (NO_RE.test(label)) continue;
+      if (connectHost && /^(?:submit|check my work)$/i.test(label)) continue; // 不把整份作业交卷当成本题下一步。
       // 标题可能只写 Knowledge Check 7.4，方向信息在 aria-label/title 中。
       // 活动卡片属于复习内容，不能当成下一章测验入口反复重做。
       const description = D.norm((el.getAttribute('aria-label') || '') + ' ' + (el.title || ''));
@@ -846,11 +1017,21 @@
       const knowledgeCheck = KNOWLEDGE_CHECK_RE.test(label);
       const chapterQuiz = CHAPTER_QUIZ_RE.test(label);
       const assessmentEntry = knowledgeCheck || chapterQuiz;
-      const chromeArea = el.closest(CHROME_SEL);
+      // McGraw Hill 将置信度按钮作为提交入口，文字只有 High / Medium / Low。
+      // 必须同时匹配真实提交组件和专用属性，不能把其它页面的同名按钮算进来。
+      const confidenceLevel = el.matches('button') && el.closest('awd-confidence-buttons') &&
+        /^confidence-buttons--(high|medium|low)_confidence$/.exec(el.getAttribute('data-automation-id') || '')?.[1];
+      // 默认选 Medium；这是真正的题目提交区，即使嵌在底部导航里也不能被过滤。
+      const confidenceScore = confidenceLevel ? { medium: 14, high: 12, low: 10 }[confidenceLevel] : 0;
+      // McGraw Hill 的反馈页把 Next Question 放在 role=navigation 的 footer 内。
+      // 仅对该站点实际题目按钮栏中的下一题放行，普通页眉/页脚仍按原规则排除。
+      const mcgrawNext = isMcgrawNextButton(el, label);
+      const connectNext = connectHost && el.matches('button.footer__link--next') && /^next$/i.test(label);
+      const chromeArea = confidenceLevel || mcgrawNext || connectNext ? null : el.closest(CHROME_SEL);
       // 后续推进排除普通页眉/侧栏按钮；明确的测验入口可在正文按钮缺失时兜底。
       if (excludeChrome && chromeArea && !assessmentEntry) continue;
 
-      let score = chapterQuiz ? (/^next\b/i.test(label) ? 16 : 10) : GET_STARTED_RE.test(label) ? 12 : GO_EXACT.test(label) ? 10 : knowledgeCheck ? (/^next\b/i.test(label) ? 12 : 8) : GO_LOOSE.test(label) ? 5 : 0;
+      let score = confidenceScore || (connectNext ? 16 : mcgrawNext ? 14 : chapterQuiz ? (/^next\b/i.test(label) ? 16 : 10) : GET_STARTED_RE.test(label) ? 12 : GO_EXACT.test(label) ? 10 : knowledgeCheck ? (/^next\b/i.test(label) ? 12 : 8) : GO_LOOSE.test(label) ? 5 : 0);
       if (!score) continue;
       if (isDisabled(el)) score -= 1; // 可能是「选完才解锁」，别直接淘汰
       if (chromeArea) score -= assessmentEntry ? 4 : 6; // 同名测验入口可兜底，普通导航件继续重罚
@@ -981,9 +1162,81 @@
     return D.collect().filter((q) => !state.done.has(q.hash));
   }
 
+  function connectPageSnapshot() {
+    const frames = Array.from(document.querySelectorAll('.worksheet__main iframe.external[title="Assessment Tool iFrame"]')).filter(D.isVisible);
+    const context = frames.map(frame => {
+      const copy=frame.closest('.worksheet__main').cloneNode(true);
+      copy.querySelectorAll('iframe, .gaspar_audio__container, .t-hidden, [aria-hidden="true"], .__mas_select_hint').forEach(el=>el.remove());
+      return D.norm(copy.textContent);
+    }).join('\n');
+    return {href:location.href,context,frames:frames.map(frame=>{
+      try {
+        const doc=frame.contentDocument,cells=Array.from(doc?.querySelectorAll('#jQuerySheet table.jSheet td.responseCell')||[]);
+        const loading=doc?.getElementById('loading_image');
+        const source=new URL(frame.src,location.href),loaded=doc?.location.href;
+        const key=source.search.match(/Q_[\w-]+/)?.[0];
+        return {frame,doc,name:frame.name,src:frame.src,cells,values:cells.map(cell=>cell.classList.contains('isN')?connectNumericText(cell):D.connectCellText(cell)),
+          ready:!!doc&&doc.readyState==='complete'&&cells.length>0&&(!loading||getComputedStyle(loading).display==='none')&&(!key||loaded?.includes(key)),
+          structure:cells.map(cell=>cell.id+'|'+cell.getAttribute('dropdownid')+'|'+cell.getAttribute('dropdowntype')).join('::')};
+      }catch(_){return {frame,doc:null,cells:[],values:[],ready:false};}
+    })};
+  }
+
+  function sameConnectSnapshot(a,b) {
+    return a.href===b.href&&a.context===b.context&&a.frames.length===b.frames.length&&a.frames.every((item,index)=>{
+      const other=b.frames[index];
+      return item.frame===other.frame&&item.doc===other.doc&&item.src===other.src&&item.name===other.name&&item.ready===other.ready&&item.structure===other.structure&&
+        item.cells.length===other.cells.length&&item.cells.every((cell,i)=>cell===other.cells[i])&&item.values.join('\u0000')===other.values.join('\u0000');
+    });
+  }
+
+  async function waitForConnectQuestion(before,timeout) {
+    const started=performance.now();let previous=null,stableSince=started,lastRefresh=0,progressed=false,issues=[];
+    while(state.running&&performance.now()-started<(progressed?Math.max(timeout,15000):timeout)){
+      const current=connectPageSnapshot();
+      if(!sameConnectSnapshot(before,current))progressed=true;
+      const replaced=current.frames.length!==before.frames.length||current.frames.some((item,index)=>{
+        const old=before.frames[index];
+        return !old||item.frame!==old.frame||item.doc!==old.doc||item.src!==old.src||item.name!==old.name;
+      });
+      const changedContext=current.context!==before.context||current.href!==before.href||replaced;
+      // 题干先变、旧iframe尚未换掉时不能把旧控件当成新题；原位重用时必须已重置字段。
+      const controlsReady=current.frames.length>0&&current.frames.every(item=>{
+        if(!item.ready)return false;
+        const old=before.frames.find(old=>old.frame===item.frame);
+        return !old||item.doc!==old.doc||item.structure!==old.structure||
+          item.cells.length!==old.cells.length||item.cells.some((cell,i)=>cell!==old.cells[i])||
+          item.values.every(value=>value==='')&&old.values.some(value=>value!=='');
+      });
+      const native=D.collect().filter(q=>q.container.ownerDocument===document&&!q.readOnly&&!state.done.has(q.hash));
+      if(!previous||!sameConnectSnapshot(previous,current)){previous=current;stableSince=performance.now();}
+      if((controlsReady&&changedContext||native.length)&&performance.now()-stableSince>=350){
+        if(performance.now()-lastRefresh>=500){await D.refreshConnectChoices?.();lastRefresh=performance.now();}
+        if(!state.running)break;
+        const after=connectPageSnapshot();
+        if(!sameConnectSnapshot(current,after)){previous=after;stableSince=performance.now();continue;}
+        const questions=D.collect().filter(q=>!q.readOnly);
+        issues=questions.filter(q=>q.incomplete).flatMap(q=>q.issues);
+        if(questions.length&&!issues.length){
+          // 两个不同题目可能具有相同文字；确认是新页后不能因旧hash而跳过新控件。
+          questions.forEach(q=>state.done.delete(q.hash));
+          return {ok:true,questions};
+        }
+      }
+      await sleep(100);
+    }
+    if(!state.running)return {ok:false,cancelled:true,reason:'已停止等待下一题'};
+    state.stats.timeouts++;
+    return {ok:false,reason:progressed
+      ? '已进入下一题，但题目控件尚未就绪'+(issues.length?'：'+[...new Set(issues)].join('；'):'，请等待页面加载后重新开始')
+      : '点击 Next 后未检测到题目变化，已停止，避免跳过题目'};
+  }
+
   function isReadOnlyQuiz() {
     const questions = D.collect(document, { includeReadOnly: true });
-    return questions.length > 0 && questions.every((q) => q.readOnly);
+    // McGraw Hill 提交中及反馈页都会禁用文本框；Next 可能稍后才出现。
+    // 文本框禁用不足以判定测验结束，继续由推进流程等待反馈/下一题。
+    return questions.length > 0 && questions.every((q) => q.readOnly && q.type !== 'text');
   }
 
   /** 轮询等待「页面上出现了没做过的新题」 */
@@ -1062,13 +1315,16 @@
       if (isDisabled(btn.el) && !(await waitEnabled(btn.el))) {
         return { ok: false, reason: `按钮「${btn.label}」一直是禁用状态` };
       }
-      log({ level: 'step', stem: '点击「' + btn.label + '」', pick: '→', why: step === 0 ? '提交本题' : '继续' });
+      const connectNext=btn.el.matches('button.footer__link--next')&&!!document.querySelector('.worksheet__main iframe.external[title="Assessment Tool iFrame"]');
+      log({ level: 'step', stem: '点击「' + btn.label + '」', pick: '→', why: connectNext?'保存后进入下一题':step === 0 ? '提交本题' : '继续' });
       if (step === 0) {
         // 紧贴导航动作落盘：写早了，提交前的意外刷新可能把未提交题误判为已完成；
         // 写晚了，按钮触发整页导航后当前 JS 上下文已经不存在。
         await saveSessionProgress();
       }
+      const connectBefore=connectNext?connectPageSnapshot():null;
       if (clickForNavigation(btn.el)) return { ok: true, navigating: true };
+      if(connectBefore)return waitForConnectQuestion(connectBefore,state.settings.pageTimeout);
       lastClicked = btn.el;
 
       const r = await waitForProgress(anchor, btn.el, state.settings.pageTimeout, () => forceAssessmentNavigation(btn));
@@ -1134,6 +1390,8 @@
   }
 
   async function askUncached(q) {
+    const captureEpoch = {running:state.running, highlight:highlightEpoch, onePick:onePickEpoch};
+    const captureCancelled = () => captureEpoch.running && !state.running || captureEpoch.highlight !== highlightEpoch || captureEpoch.onePick !== onePickEpoch;
     let images = [];
     try {
       if (q.visuals?.length) {
@@ -1141,25 +1399,24 @@
         images = await window.__MAS_VISION__.prepare(q);
       }
     } catch (error) { return { ok: false, error: error.message }; }
-    return new Promise((resolve) => {
-      chrome.runtime.sendMessage(
-        {
-          type: 'MCQ_SOLVE',
-          payload: {
-            hash: q.hash,
-            stem: q.stem,
-            type: q.type,
-            ...(images.length ? { images } : {}),
-            options: q.options.filter((o) => !o.unavailable).map((o) => ({ letter: o.letter, text: o.text })),
-            url: location.href
-          }
-        },
-        (res) => {
-          if (chrome.runtime.lastError) resolve({ ok: false, error: chrome.runtime.lastError.message });
-          else resolve(res || { ok: false, error: '无响应' });
-        }
-      );
-    });
+    const payload = {
+      hash: q.hash, stem: q.stem, type: q.type,
+      ...(q.type === 'text' ? { blankCount: q.answerInputs.length, blanks: q.blanks } : {}),
+      ...(images.length ? { images } : {}),
+      options: q.options.filter(o => !o.unavailable).map(o => ({letter:o.letter,text:o.text})), url:location.href
+    };
+    let response = await runtimeRequest({type:'MCQ_SOLVE',payload});
+    if (!response?.ok && response?.imageReadFailed && images.some(image => image.url)) {
+      try {
+        if (captureCancelled()) throw new Error('作答已取消');
+        if (!q.container.isConnected || !liveQuestion(q)) throw new Error('题目已变化，请重新扫描');
+        const cropped = await window.__MAS_VISION__.captureFallback(q,images);
+        if (captureCancelled()) throw new Error('作答已取消');
+        if (!q.container.isConnected || !liveQuestion(q)) throw new Error('截图后题目已变化，已停止求解');
+        response = await runtimeRequest({type:'MCQ_SOLVE',payload:{...payload,images:cropped}});
+      } catch (error) { return {ok:false,error:response.error + '；' + error.message}; }
+    }
+    return response || {ok:false,error:'无响应'};
   }
 
   // ---------------- 单题处理 ----------------
@@ -1178,11 +1435,17 @@
     if (!state.running) return false;
 
     const numeric = q.type === 'numeric';
-    const hasAnswer = numeric ? numericValue(res.value) !== null : res.letters && res.letters.length &&
-      (!q.answerSelect || res.letters.length === 1 && q.options.some(o => o.letter === res.letters[0]));
+    const text = q.type === 'text';
+    const hasAnswer = text ? textValues(q, res.values) !== null : numeric ? numericValue(res.value) !== null : res.letters && res.letters.length &&
+      (!(q.answerSelect || q.answerCell) || res.letters.length === 1 && q.options.some(o => o.letter === res.letters[0]));
     if (!res.ok || !hasAnswer) {
       state.stats.failed++;
-      log({ level: 'err', stem: q.stem, pick: '×', why: res.error || '模型没有给出可用选项' });
+      log({ level: 'err', stem: q.stem, pick: '×', why: res.error || '模型没有给出可用答案' });
+      return false;
+    }
+    if (text && (!liveQuestion(q) || q.answerInputs.some(input => !input.isConnected))) {
+      state.stats.failed++;
+      log({ level: 'err', stem: q.stem, pick: '!', why: '填空题或输入框已变化，已跳过填写和提交' });
       return false;
     }
 
@@ -1190,19 +1453,20 @@
     highlightAnswers.set(q.hash, res);
     const low = typeof res.confidence === 'number' && res.confidence < 0.5;
     clearMarks(q);
-    mark(q, numeric ? [] : res.letters, low);
+    mark(q, numeric || text ? [] : res.letters, low, res.values, res.value);
     log({
       level: low ? 'warn' : 'ok',
       stem: q.stem,
-      pick: numeric ? numericValue(res.value) : res.letters.join(''),
+      pick: text ? res.values.map((value, index) => (index + 1) + ': ' + value).join(' / ') : numeric ? numericValue(res.value) : res.letters.join(''),
       why: (res.cached ? '[缓存] ' : '') + (res.reason || '')
     });
 
     if (state.settings.mode === 'highlight') return true;
 
-    const applied = numeric ? await applyNumericAnswer(q, res.value) : await applyAnswer(q, res.letters);
+    const applied = text ? await applyTextAnswer(q, res.values) : numeric ? await applyNumericAnswer(q, res.value) : await applyAnswer(q, res.letters);
     if (applied === false) {
-      log({ level: 'err', stem: q.stem, pick: '!', why: '点击没有生效，已跳过提交，请手动处理' });
+      if (text || q.answerCell || q.answerNumberCell) { state.stats.failed++; state.stats.answered--; }
+      log({ level: 'err', stem: q.stem, pick: '!', why: text || q.answerNumberCell ? '填空未全部写入或校验失败，已跳过提交，请手动处理' : '点击没有生效，已跳过提交，请手动处理' });
       return false;
     }
     await sleep(state.settings.actionDelay);
@@ -1213,7 +1477,9 @@
   async function handleBatch(qs) {
     let ok = 0;
     const queue = qs.slice();
-    const workers = Array.from({ length: Math.max(1, state.settings.concurrency) }, async () => {
+    // Connect 分题常有前后依赖，且共用编辑器；按页面顺序完成求解和保存再处理下一空。
+    const concurrency=qs.some(q=>q.answerCell||q.answerNumberCell)?1:Math.max(1,state.settings.concurrency);
+    const workers = Array.from({ length: concurrency }, async () => {
       while (state.running && queue.length) {
         const q = queue.shift();
         setMeta(`处理中… 已答 ${state.stats.answered} / 失败 ${state.stats.failed} / 第 ${state.stats.rounds} 轮`);
@@ -1228,9 +1494,12 @@
 
   async function scanOnly() {
     await loadSettings();
+    await D.refreshConnectChoices?.();
     const qs = D.collect(document, { includeReadOnly: true });
     qs.forEach((q) => {
-      if (q.type === 'numeric') { if (q.answerInput) q.answerInput.classList.add('__mcq_scan'); }
+      if (q.type === 'text') q.answerInputs.forEach(input => input.classList.add('__mcq_scan'));
+      else if (q.answerCell) q.answerCell.classList.add('__mcq_scan');
+      else if (q.type === 'numeric') { const control=q.answerNumberCell||q.answerInput;if(control)control.classList.add('__mcq_scan'); }
       else q.options.forEach((o) => o.clickTarget.classList.add('__mcq_scan'));
     });
     setTimeout(() => document.querySelectorAll('.__mcq_scan').forEach((e) => e.classList.remove('__mcq_scan')), 4000);
@@ -1243,8 +1512,8 @@
       log({
         level: q.incomplete ? 'warn' : undefined,
         stem: q.stem || '(无题干)',
-        pick: q.incomplete ? '缺失' : q.kind === 'matching' ? '配对' : q.type === 'numeric' ? '数字' : q.type === 'multi' ? '多选' : String(q.options.filter((o) => !o.unavailable).length),
-        why: (q.incomplete ? '识别不完整：' + q.issues.join('；') + '\n' : '') + (q.type === 'numeric'
+        pick: q.incomplete ? '缺失' : q.type === 'text' ? '填空' : q.kind === 'matching' ? '配对' : q.type === 'numeric' ? '数字' : q.type === 'multi' ? '多选' : String(q.options.filter((o) => !o.unavailable).length),
+        why: (q.incomplete ? '识别不完整：' + q.issues.join('；') + '\n' : '') + (q.type === 'text' ? '文本填空 · ' + q.answerInputs.length + ' 个空' + (q.readOnly ? '（已提交/只读）' : '') : q.type === 'numeric'
           ? (q.questionNumber ? 'Canvas 第 ' + q.questionNumber + ' 题 · ' : '') + '数字填空' + (q.readOnly ? '（已提交/只读）' : '')
           : q.options.map((o) => o.letter + '. ' + (o.unavailable ? '[空选项：网页未提供文字]' : o.text)).join('\n'))
       })
@@ -1261,10 +1530,13 @@
   }
 
   async function start(options) {
+    if (D.isDelegatedConnectFrame?.()) return;
     if (state.running || panelHidden) return;
+    const startEpoch = highlightEpoch;
     const resumeSession = options && options.resumeSession;
     await loadSettings();
-    if (panelHidden) return;
+    await D.refreshConnectChoices?.();
+    if (state.running || panelHidden || startEpoch !== highlightEpoch) return;
     if (isReadOnlyQuiz()) {
       setMeta('已提交/只读测验页面，请打开可作答的测验页面');
       endSession(false);
@@ -1302,6 +1574,11 @@
 
     while (state.running && state.stats.rounds < maxRounds) {
       state.stats.rounds++;
+      if (document.querySelector('.worksheet__main iframe.external[title="Assessment Tool iFrame"]')) {
+        await D.refreshConnectChoices?.();
+        if (!state.running) break;
+        qs = pendingQuestions();
+      }
 
       if (!qs.length) {
         if (isReadOnlyQuiz()) {
@@ -1363,6 +1640,17 @@
 
       await sleep(submitDelay);
       if (!state.running) break;
+      if (qs.some(q => q.type === 'text' && !textAnswerMatches(q, highlightAnswers.get(q.hash)?.values))) {
+        reason = '提交前填空内容或控件发生变化，已停止提交';
+        break;
+      }
+      if (qs.some(q => q.answerCell && (!liveQuestion(q) || !verifySelection(q,highlightAnswers.get(q.hash)?.letters || [])))) {
+        reason = '提交前表格选择内容发生变化，已停止翻页';
+        break;
+      }
+      if(qs.some(q=>q.answerNumberCell&&(!liveQuestion(q)||connectNumericValue(q.answerNumberCell)!==numericValue(highlightAnswers.get(q.hash)?.value)))){
+        reason='翻页前表格数字内容发生变化，已停止翻页';break;
+      }
 
       const r = await advance(anchor);
       if (r.navigating) return;
@@ -1391,6 +1679,7 @@
   // ---------------- 消息入口 ----------------
 
   chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+    if (D.isDelegatedConnectFrame?.() && ['MCQ_SCAN','MCQ_START','MCQ_STOP','MCQ_RESET'].includes(msg?.type)) return;
     switch (msg && msg.type) {
       case 'MAS_HIGHLIGHTS':
         if (typeof msg.payload?.visible === 'boolean') {
@@ -1477,6 +1766,10 @@
     'keydown',
     (e) => {
       if (e.key === 'Escape') {
+        if (D.isDelegatedConnectFrame?.()) {
+          // 焦点在工具 iframe 时，Esc 也必须中断实际拥有作答队列的外层。
+          window.parent.document.dispatchEvent(new window.parent.KeyboardEvent('keydown', {key:'Escape',code:'Escape',bubbles:true}));
+        }
         cancelOnePick();
         hideAnswers();
         highlightEpoch++;
