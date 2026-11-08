@@ -1,0 +1,18 @@
+# Local secrets and configuration
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Dependencies and generated files
+node_modules/
+__pycache__/
+*.pyc
+*.log
+.DS_Store
+Thumbs.db
+
+# Original saved webpage may contain account data and request tokens
+/test/sage-real.html
+/test/Introduction to Business_ Knowledge Check 2.1 Question 3_files/
